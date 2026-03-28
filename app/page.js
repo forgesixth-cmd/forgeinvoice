@@ -8,6 +8,8 @@ export default function Home() {
   const [client, setClient] = useState("");
   const [amount, setAmount] = useState("");
   const [invoices, setInvoices] = useState([]);
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const configError = !supabase
     ? "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel project settings."
     : "";
@@ -41,9 +43,37 @@ export default function Home() {
   const login = async () => {
     if (!supabase) return;
 
-    await supabase.auth.signInWithOAuth({
+    setLoginError("");
+    setIsLoggingIn(true);
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
+      options: {
+        redirectTo: window.location.origin,
+        skipBrowserRedirect: true,
+      },
     });
+
+    setIsLoggingIn(false);
+
+    if (error) {
+      if (error.message?.toLowerCase().includes("provider is not enabled")) {
+        setLoginError(
+          "Google login is not enabled in Supabase yet. In your Supabase dashboard, open Authentication > Providers > Google, enable it, and add this site URL as an allowed redirect."
+        );
+        return;
+      }
+
+      setLoginError(error.message || "Unable to start login. Please try again.");
+      return;
+    }
+
+    if (data?.url) {
+      window.location.assign(data.url);
+      return;
+    }
+
+    setLoginError("Unable to start login. Please verify your Supabase auth settings.");
   };
 
   useEffect(() => {
@@ -97,13 +127,20 @@ export default function Home() {
 
   if (!user) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <button
-          onClick={login}
-          className="bg-black text-white px-6 py-3 rounded-lg"
-        >
-          Login with Google
-        </button>
+      <div className="h-screen flex items-center justify-center p-6">
+        <div className="text-center max-w-md">
+          <button
+            onClick={login}
+            disabled={isLoggingIn}
+            className="bg-black text-white px-6 py-3 rounded-lg disabled:opacity-60"
+          >
+            {isLoggingIn ? "Starting login..." : "Login with Google"}
+          </button>
+
+          {loginError ? (
+            <p className="mt-4 text-sm text-red-600">{loginError}</p>
+          ) : null}
+        </div>
       </div>
     );
   }
