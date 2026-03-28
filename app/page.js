@@ -1,102 +1,135 @@
 "use client";
 
-import { useState } from "react";
-import jsPDF from "jspdf";
+import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 
 export default function Home() {
+  const [user, setUser] = useState(null);
   const [client, setClient] = useState("");
   const [amount, setAmount] = useState("");
+  const [invoices, setInvoices] = useState([]);
 
-  const generatePDF = () => {
-    const doc = new jsPDF();
-
-    doc.setFontSize(18);
-    doc.text("SixthForge Invoice", 20, 20);
-
-    doc.setFontSize(12);
-    doc.text(`Client: ${client}`, 20, 40);
-    doc.text(`Amount: ₹${amount}`, 20, 50);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, 60);
-
-    doc.save("invoice.pdf");
+useEffect(() => {
+  const getUser = async () => {
+    const { data } = await supabase.auth.getSession();
+    if (data.session) {
+      setUser(data.session.user);
+      fetchInvoices(data.session.user.id);
+    }
   };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-100 to-gray-200 flex flex-col">
+  getUser();
+}, []);
 
-      {/* HEADER */}
-      <div className="flex justify-between items-center px-8 py-4 bg-white shadow-sm">
-        <h1 className="text-xl font-bold">SixthForge</h1>
-        <button className="text-sm bg-black text-white px-4 py-2 rounded-lg">
-          Upgrade
+  const checkUser = async () => {
+    const { data } = await supabase.auth.getUser();
+    if (data.user) {
+      setUser(data.user);
+      fetchInvoices(data.user.id);
+    }
+  };
+
+  const login = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+    });
+  };
+
+  useEffect(() => {
+  const { data: listener } = supabase.auth.onAuthStateChange(
+    (_event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        fetchInvoices(session.user.id);
+      }
+    }
+  );
+
+  return () => listener.subscription.unsubscribe();
+}, []);
+
+  const logout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
+
+  const saveInvoice = async () => {
+    if (!client || !amount) return;
+
+    await supabase.from("invoices").insert([
+      {
+        user_id: user.id,
+        client,
+        amount,
+      },
+    ]);
+
+    fetchInvoices(user.id);
+    setClient("");
+    setAmount("");
+  };
+
+  const fetchInvoices = async (userId) => {
+    const { data } = await supabase
+      .from("invoices")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    setInvoices(data);
+  };
+
+  if (!user) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <button
+          onClick={login}
+          className="bg-black text-white px-6 py-3 rounded-lg"
+        >
+          Login with Google
         </button>
       </div>
+    );
+  }
 
-      {/* MAIN */}
-      <div className="flex flex-1 items-center justify-center p-6">
+  return (
+    <div className="p-6 max-w-xl mx-auto">
 
-        <div className="grid md:grid-cols-2 gap-6 w-full max-w-4xl">
+      <div className="flex justify-between mb-4">
+        <h1 className="text-xl font-bold">ForgeInvoice</h1>
+        <button onClick={logout}>Logout</button>
+      </div>
 
-          {/* FORM */}
-          <div className="bg-white p-6 rounded-2xl shadow-md">
-            <h2 className="text-lg font-semibold mb-4">Create Invoice</h2>
+      <input
+        className="w-full border p-2 mb-3"
+        placeholder="Client"
+        value={client}
+        onChange={(e) => setClient(e.target.value)}
+      />
 
-            <input
-              className="w-full border rounded-lg p-3 mb-4 focus:ring-2 focus:ring-black outline-none"
-              placeholder="Client Name"
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-            />
+      <input
+        className="w-full border p-2 mb-3"
+        placeholder="Amount"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+      />
 
-            <input
-              className="w-full border rounded-lg p-3 mb-6 focus:ring-2 focus:ring-black outline-none"
-              placeholder="Amount"
-              type="number"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
+      <button
+        onClick={saveInvoice}
+        className="w-full bg-black text-white p-2 mb-6"
+      >
+        Save Invoice
+      </button>
 
-            <button
-              onClick={generatePDF}
-              className="w-full bg-black text-white p-3 rounded-lg hover:bg-gray-800 transition"
-            >
-              Generate & Download Invoice
-            </button>
-            <p className="text-xs text-gray-500 mt-2 text-center">
-              Free plan: 3 invoices • Upgrade for unlimited
-            </p>
-          </div>
+      <h2 className="font-semibold mb-2">Your Invoices</h2>
 
-          {/* PREVIEW */}
-          <div className="bg-white p-6 rounded-2xl shadow-md">
-            <h2 className="text-lg font-semibold mb-4">Preview</h2>
-
-            <div className="border rounded-xl p-4 bg-gray-50">
-              <p className="text-sm text-gray-500 mb-2">
-                SixthForge Invoice
-              </p>
-
-              <p className="mb-1">
-                <strong>Client:</strong> {client || "—"}
-              </p>
-
-              <p className="mb-1">
-                <strong>Amount:</strong> ₹{amount || "—"}
-              </p>
-
-              <p className="text-sm text-gray-400 mt-4">
-                {new Date().toLocaleDateString()}
-              </p>
-            </div>
-          </div>
-
+      {invoices.map((inv) => (
+        <div key={inv.id} className="border p-3 mb-2 rounded">
+          <p>{inv.client}</p>
+          <p>₹{inv.amount}</p>
         </div>
-      </div>
+      ))}
 
-      {/* FOOTER */}
-      <div className="text-center text-sm text-gray-500 pb-4">
-        Made with SixthForge 🚀
-      </div>
     </div>
   );
 }
