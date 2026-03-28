@@ -15,28 +15,36 @@ export default function Home() {
   };
 
   return (
-    <div style={{ padding: 40 }}>
-      <h1>ForgeInvoice</h1>
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+      <div className="bg-white p-8 rounded-2xl shadow-lg w-full max-w-md">
+        
+        <h1 className="text-2xl font-bold mb-6 text-center">
+          ForgeInvoice
+        </h1>
 
-      <input
-        placeholder="Client Name"
-        value={client}
-        onChange={(e) => setClient(e.target.value)}
-      />
+        <input
+          className="w-full border rounded-lg p-3 mb-4 focus:outline-none focus:ring-2 focus:ring-black"
+          placeholder="Client Name"
+          value={client}
+          onChange={(e) => setClient(e.target.value)}
+        />
 
-      <br /><br />
+        <input
+          className="w-full border rounded-lg p-3 mb-6 focus:outline-none focus:ring-2 focus:ring-black"
+          placeholder="Amount"
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
 
-      <input
-        placeholder="Amount"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-      />
+        <button
+          onClick={generatePDF}
+          className="w-full bg-black text-white p-3 rounded-lg hover:bg-gray-800 transition"
+        >
+          Generate Invoice
+        </button>
 
-      <br /><br />
-
-      <button onClick={generatePDF}>
-        Generate Invoice
-      </button>
+      </div>
     </div>
   );
 }
