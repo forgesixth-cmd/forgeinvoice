@@ -94,6 +94,9 @@ export default function Home() {
       <div className="text-center text-sm text-gray-500 pb-4">
         Made with SixthForge 🚀
       </div>
+      <p className="text-xs text-gray-500 mt-2 text-center">
+        Free plan: 3 invoices • Upgrade for unlimited
+      </p>
     </div>
   );
 }
