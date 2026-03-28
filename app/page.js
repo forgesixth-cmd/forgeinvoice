@@ -1,15 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Image from "next/image";
+import { startTransition, useCallback, useEffect, useState } from "react";
 import { jsPDF } from "jspdf";
 import { supabase } from "../lib/supabase";
 
 const STATUS_STYLES = {
   draft: "bg-amber-100 text-amber-800",
-  sent: "bg-sky-100 text-sky-800",
+  pending: "bg-sky-100 text-sky-800",
   paid: "bg-emerald-100 text-emerald-800",
   overdue: "bg-rose-100 text-rose-800",
 };
+
+const INVOICE_FILTERS = ["all", "draft", "pending", "paid"];
 
 function getTodayDateString() {
   return new Date().toISOString().split("T")[0];
@@ -43,6 +46,23 @@ function createInitialForm() {
     notes: "",
     items: [createEmptyItem()],
   };
+}
+
+function createBrandProfile(accountEmail = "") {
+  return {
+    companyName: "ForgeInvoice Studio",
+    companyEmail: accountEmail,
+    companyAddress: "",
+    logoDataUrl: "",
+  };
+}
+
+function getDraftStorageKey(userId) {
+  return `forgeinvoice:draft:${userId}`;
+}
+
+function getBrandStorageKey(userId) {
+  return `forgeinvoice:brand:${userId}`;
 }
 
 function formatCurrency(value, currency = "INR") {
@@ -81,6 +101,23 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function summarizeTotalsByCurrency(invoices) {
+  const totals = invoices.reduce((accumulator, invoice) => {
+    const currency = invoice.currency || "INR";
+    const amount = Number(invoice.total_amount ?? invoice.amount ?? 0);
+
+    accumulator[currency] = (accumulator[currency] || 0) + amount;
+    return accumulator;
+  }, {});
+
+  const entries = Object.entries(totals);
+  if (entries.length === 0) return "No invoices yet";
+
+  return entries
+    .map(([currency, value]) => formatCurrency(value, currency))
+    .join(" • ");
+}
+
 function normalizeInvoice(inv) {
   const items =
     Array.isArray(inv.items) && inv.items.length > 0
@@ -105,7 +142,7 @@ function normalizeInvoice(inv) {
     client_address: inv.client_address || "",
     issue_date: inv.issue_date || inv.created_at?.split("T")[0] || "",
     due_date: inv.due_date || "",
-    status: inv.status || "draft",
+    status: inv.status === "sent" ? "pending" : inv.status || "draft",
     currency: inv.currency || "INR",
     tax_rate: Number(inv.tax_rate ?? 0),
     subtotal,
@@ -116,9 +153,42 @@ function normalizeInvoice(inv) {
   };
 }
 
-function downloadInvoicePdf(invoice, accountEmail) {
+function invoiceToForm(invoice) {
+  const normalized = normalizeInvoice(invoice);
+
+  return {
+    invoiceNumber: normalized.invoice_number,
+    clientName: normalized.client_name,
+    clientEmail: normalized.client_email,
+    clientAddress: normalized.client_address,
+    issueDate: normalized.issue_date || getTodayDateString(),
+    dueDate: normalized.due_date || getFutureDateString(14),
+    status: normalized.status,
+    currency: normalized.currency,
+    taxRate: String(normalized.tax_rate ?? 0),
+    notes: normalized.notes || "",
+    items:
+      normalized.items?.map((item) => ({
+        description: item.description || "",
+        quantity: String(item.quantity ?? 1),
+        rate: String(item.rate ?? 0),
+      })) || [createEmptyItem()],
+  };
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Unable to read logo file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   const pdf = new jsPDF({ unit: "pt", format: "a4" });
   const normalized = normalizeInvoice(invoice);
+  const brand = brandProfile || createBrandProfile(accountEmail);
   let y = 56;
   const pageWidth = 595;
   const leftX = 44;
@@ -132,13 +202,21 @@ function downloadInvoicePdf(invoice, accountEmail) {
   pdf.setFillColor(22, 33, 62);
   pdf.rect(0, 0, pageWidth, 120, "F");
 
+  if (brand.logoDataUrl) {
+    const imageFormat = brand.logoDataUrl.includes("image/jpeg") ? "JPEG" : "PNG";
+    pdf.addImage(brand.logoDataUrl, imageFormat, 470, 28, 72, 72);
+  }
+
   pdf.setTextColor(255, 255, 255);
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(24);
-  pdf.text("ForgeInvoice", 44, 56);
-  pdf.setFontSize(11);
+  pdf.text(brand.companyName || "ForgeInvoice", 44, 56);
+  pdf.setFontSize(10);
   pdf.setFont("helvetica", "normal");
-  pdf.text(`Prepared by ${accountEmail || "your team"}`, 44, 80);
+  pdf.text(`Prepared by ${brand.companyEmail || accountEmail || "your team"}`, 44, 78);
+  if (brand.companyAddress) {
+    pdf.text(brand.companyAddress, 44, 96, { maxWidth: 320 });
+  }
 
   pdf.setTextColor(32, 41, 67);
   y = 160;
@@ -236,12 +314,18 @@ function downloadInvoicePdf(invoice, accountEmail) {
 export default function Home() {
   const [user, setUser] = useState(null);
   const [form, setForm] = useState(createInitialForm);
+  const [brandProfile, setBrandProfile] = useState(createBrandProfile);
   const [invoices, setInvoices] = useState([]);
+  const [editingInvoiceId, setEditingInvoiceId] = useState(null);
+  const [historyFilter, setHistoryFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [lastDraftSavedAt, setLastDraftSavedAt] = useState("");
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [dataError, setDataError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(null);
   const configError = !supabase
     ? "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel project settings."
     : "";
@@ -252,13 +336,15 @@ export default function Home() {
   const taxAmount = subtotal * (Number(form.taxRate || 0) / 100);
   const totalAmount = subtotal + taxAmount;
   const paidInvoices = invoices.filter((invoice) => invoice.status === "paid");
-  const outstandingValue = invoices
-    .filter((invoice) => invoice.status !== "paid")
-    .reduce(
-      (sum, invoice) =>
-        sum + Number(invoice.total_amount ?? invoice.amount ?? 0),
-      0
-    );
+  const filteredInvoices = invoices.filter((invoice) => {
+    const matchesFilter =
+      historyFilter === "all" ? true : invoice.status === historyFilter;
+    const matchesSearch = invoice.client_name
+      .toLowerCase()
+      .includes(searchQuery.toLowerCase());
+
+    return matchesFilter && matchesSearch;
+  });
 
   const getFriendlySupabaseError = (error, action) => {
     const message = error?.message || "";
@@ -311,6 +397,66 @@ export default function Home() {
 
     getUser();
   }, [fetchInvoices]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const savedDraft = window.localStorage.getItem(getDraftStorageKey(user.id));
+    if (savedDraft) {
+      try {
+        const parsed = JSON.parse(savedDraft);
+        startTransition(() => {
+          if (parsed.form) setForm(parsed.form);
+          if (parsed.editingInvoiceId) setEditingInvoiceId(parsed.editingInvoiceId);
+          if (parsed.lastDraftSavedAt) setLastDraftSavedAt(parsed.lastDraftSavedAt);
+        });
+      } catch {
+        window.localStorage.removeItem(getDraftStorageKey(user.id));
+      }
+    }
+
+    const savedBrand = window.localStorage.getItem(getBrandStorageKey(user.id));
+    if (savedBrand) {
+      try {
+        const parsedBrand = JSON.parse(savedBrand);
+        startTransition(() => {
+          setBrandProfile(parsedBrand);
+        });
+      } catch {
+        window.localStorage.removeItem(getBrandStorageKey(user.id));
+        startTransition(() => {
+          setBrandProfile(createBrandProfile(user.email));
+        });
+      }
+    } else {
+      startTransition(() => {
+        setBrandProfile(createBrandProfile(user.email));
+      });
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const interval = window.setInterval(() => {
+      const timestamp = new Date().toISOString();
+      window.localStorage.setItem(
+        getDraftStorageKey(user.id),
+        JSON.stringify({
+          form,
+          editingInvoiceId,
+          lastDraftSavedAt: timestamp,
+        })
+      );
+      window.localStorage.setItem(
+        getBrandStorageKey(user.id),
+        JSON.stringify(brandProfile)
+      );
+      setLastDraftSavedAt(timestamp);
+    }, 8000);
+
+    return () => window.clearInterval(interval);
+  }, [brandProfile, editingInvoiceId, form, user]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -367,10 +513,15 @@ export default function Home() {
     setInvoices([]);
     setDataError("");
     setSaveSuccess("");
+    setEditingInvoiceId(null);
   };
 
   const updateFormField = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const updateBrandField = (field, value) => {
+    setBrandProfile((current) => ({ ...current, [field]: value }));
   };
 
   const updateItem = (index, field, value) => {
@@ -397,6 +548,62 @@ export default function Home() {
           ? current.items
           : current.items.filter((_, itemIndex) => itemIndex !== index),
     }));
+  };
+
+  const resetDraft = () => {
+    setForm(createInitialForm());
+    setEditingInvoiceId(null);
+    setDataError("");
+    setSaveSuccess("");
+
+    if (user) {
+      window.localStorage.removeItem(getDraftStorageKey(user.id));
+    }
+  };
+
+  const startEditingInvoice = (invoice) => {
+    setEditingInvoiceId(invoice.id);
+    setForm(invoiceToForm(invoice));
+    setSaveSuccess(`Editing ${invoice.invoice_number}.`);
+    setDataError("");
+  };
+
+  const handleLogoUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateBrandField("logoDataUrl", dataUrl);
+    } catch (error) {
+      setDataError(error.message || "Unable to upload logo.");
+    }
+  };
+
+  const updateInvoiceStatus = async (invoiceId, nextStatus) => {
+    if (!supabase || !user) return;
+
+    setIsUpdatingStatus(invoiceId);
+    setDataError("");
+
+    const { error } = await supabase
+      .from("invoices")
+      .update({ status: nextStatus })
+      .eq("id", invoiceId)
+      .eq("user_id", user.id);
+
+    setIsUpdatingStatus(null);
+
+    if (error) {
+      setDataError(getFriendlySupabaseError(error, "update invoice status"));
+      return;
+    }
+
+    setInvoices((current) =>
+      current.map((invoice) =>
+        invoice.id === invoiceId ? { ...invoice, status: nextStatus } : invoice
+      )
+    );
   };
 
   const validateForm = () => {
@@ -460,7 +667,15 @@ export default function Home() {
       items: cleanedItems,
     };
 
-    const { error } = await supabase.from("invoices").insert([payload]);
+    const query = editingInvoiceId
+      ? supabase
+          .from("invoices")
+          .update(payload)
+          .eq("id", editingInvoiceId)
+          .eq("user_id", user.id)
+      : supabase.from("invoices").insert([payload]);
+
+    const { error } = await query;
 
     setIsSaving(false);
 
@@ -469,8 +684,17 @@ export default function Home() {
       return;
     }
 
-    setSaveSuccess(`Invoice ${payload.invoice_number} saved successfully.`);
+    setSaveSuccess(
+      editingInvoiceId
+        ? `Invoice ${payload.invoice_number} updated successfully.`
+        : `Invoice ${payload.invoice_number} saved successfully.`
+    );
+    if (user) {
+      window.localStorage.removeItem(getDraftStorageKey(user.id));
+    }
     setForm(createInitialForm());
+    setEditingInvoiceId(null);
+    setLastDraftSavedAt("");
     fetchInvoices(user.id);
   };
 
@@ -576,10 +800,10 @@ export default function Home() {
 
             <div className="flex flex-wrap gap-3">
               <button
-                onClick={() => setForm(createInitialForm())}
+                onClick={resetDraft}
                 className="rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
               >
-                Reset draft
+                {editingInvoiceId ? "Cancel edit" : "Reset draft"}
               </button>
               <button
                 onClick={logout}
@@ -599,20 +823,16 @@ export default function Home() {
             </div>
             <div className="rounded-3xl border border-white/80 bg-white/75 p-5">
               <p className="text-sm text-slate-500">Collected</p>
-              <p className="mt-3 text-3xl font-semibold text-slate-950">
-                {formatCurrency(
-                  paidInvoices.reduce(
-                    (sum, invoice) => sum + Number(invoice.total_amount || 0),
-                    0
-                  ),
-                  form.currency
-                )}
+              <p className="mt-3 text-lg font-semibold leading-8 text-slate-950">
+                {summarizeTotalsByCurrency(paidInvoices)}
               </p>
             </div>
             <div className="rounded-3xl border border-white/80 bg-white/75 p-5">
               <p className="text-sm text-slate-500">Outstanding</p>
-              <p className="mt-3 text-3xl font-semibold text-slate-950">
-                {formatCurrency(outstandingValue, form.currency)}
+              <p className="mt-3 text-lg font-semibold leading-8 text-slate-950">
+                {summarizeTotalsByCurrency(
+                  invoices.filter((invoice) => invoice.status !== "paid")
+                )}
               </p>
             </div>
           </div>
@@ -627,12 +847,21 @@ export default function Home() {
                     Create invoice
                   </p>
                   <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                    Invoice details
+                    {editingInvoiceId ? "Edit invoice" : "Invoice details"}
                   </h2>
                 </div>
-                <p className="text-sm text-slate-500">
-                  Invoice number {form.invoiceNumber}
-                </p>
+                <div className="text-sm text-slate-500 sm:text-right">
+                  <p>Invoice number {form.invoiceNumber}</p>
+                  <p className="mt-1">
+                    Draft auto-saves every 8 seconds
+                    {lastDraftSavedAt
+                      ? ` • Last saved ${new Date(lastDraftSavedAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}`
+                      : ""}
+                  </p>
+                </div>
               </div>
 
               <div className="mt-8 grid gap-4 md:grid-cols-2">
@@ -659,7 +888,7 @@ export default function Home() {
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   >
                     <option value="draft">Draft</option>
-                    <option value="sent">Sent</option>
+                    <option value="pending">Pending</option>
                     <option value="paid">Paid</option>
                     <option value="overdue">Overdue</option>
                   </select>
@@ -873,7 +1102,13 @@ export default function Home() {
                   disabled={isSaving}
                   className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSaving ? "Saving invoice..." : "Save invoice"}
+                  {isSaving
+                    ? editingInvoiceId
+                      ? "Updating invoice..."
+                      : "Saving invoice..."
+                    : editingInvoiceId
+                      ? "Update invoice"
+                      : "Save invoice"}
                 </button>
 
                 <button
@@ -892,6 +1127,7 @@ export default function Home() {
                         notes: form.notes,
                         items: form.items,
                       },
+                      brandProfile,
                       user.email
                     )
                   }
@@ -967,23 +1203,144 @@ export default function Home() {
               <div className="flex items-end justify-between gap-4">
                 <div>
                   <p className="text-sm uppercase tracking-[0.22em] text-slate-500">
+                    Brand profile
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                    PDF branding
+                  </h2>
+                </div>
+                <p className="text-sm text-slate-500">Auto-saved</p>
+              </div>
+
+              <div className="mt-6 grid gap-4">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Company name
+                  </span>
+                  <input
+                    value={brandProfile.companyName}
+                    onChange={(event) =>
+                      updateBrandField("companyName", event.target.value)
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Company email
+                  </span>
+                  <input
+                    type="email"
+                    value={brandProfile.companyEmail}
+                    onChange={(event) =>
+                      updateBrandField("companyEmail", event.target.value)
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Company address
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={brandProfile.companyAddress}
+                    onChange={(event) =>
+                      updateBrandField("companyAddress", event.target.value)
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-slate-700">Logo</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Upload a square PNG or JPG for your PDF header.
+                      </p>
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100">
+                      Upload logo
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleLogoUpload}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {brandProfile.logoDataUrl ? (
+                    <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-white p-3">
+                      <Image
+                        src={brandProfile.logoDataUrl}
+                        alt="Brand logo preview"
+                        width={56}
+                        height={56}
+                        className="h-14 w-14 rounded-2xl object-cover"
+                      />
+                      <button
+                        onClick={() => updateBrandField("logoDataUrl", "")}
+                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                      >
+                        Remove logo
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">
                     Invoice history
                   </p>
                   <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
                     Recent invoices
                   </h2>
                 </div>
-                <p className="text-sm text-slate-500">{invoices.length} total</p>
+                <p className="text-sm text-slate-500">{filteredInvoices.length} shown</p>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search by client name"
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white lg:max-w-xs"
+                />
+                <div className="flex flex-wrap gap-2">
+                  {INVOICE_FILTERS.map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => setHistoryFilter(filter)}
+                      className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
+                        historyFilter === filter
+                          ? "bg-slate-950 text-white"
+                          : "border border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50"
+                      }`}
+                    >
+                      {filter === "all"
+                        ? "All"
+                        : filter.charAt(0).toUpperCase() + filter.slice(1)}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="mt-6 space-y-4">
-                {invoices.length === 0 ? (
+                {filteredInvoices.length === 0 ? (
                   <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center text-slate-500">
-                    No invoices yet. Save your first polished invoice from the form.
+                    No invoices match this view yet. Save or search for another invoice.
                   </div>
                 ) : null}
 
-                {invoices.map((invoice) => (
+                {filteredInvoices.map((invoice) => (
                   <article
                     key={invoice.id}
                     className="rounded-3xl border border-slate-200 bg-slate-50/80 p-5"
@@ -1021,7 +1378,31 @@ export default function Home() {
 
                     <div className="mt-5 flex flex-wrap gap-3">
                       <button
-                        onClick={() => downloadInvoicePdf(invoice, user.email)}
+                        onClick={() => startEditingInvoice(invoice)}
+                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() =>
+                          updateInvoiceStatus(
+                            invoice.id,
+                            invoice.status === "paid" ? "pending" : "paid"
+                          )
+                        }
+                        disabled={isUpdatingStatus === invoice.id}
+                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isUpdatingStatus === invoice.id
+                          ? "Updating..."
+                          : invoice.status === "paid"
+                            ? "Mark pending"
+                            : "Mark paid"}
+                      </button>
+                      <button
+                        onClick={() =>
+                          downloadInvoicePdf(invoice, brandProfile, user.email)
+                        }
                         className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
                       >
                         Download PDF
