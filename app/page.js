@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { startTransition, useCallback, useEffect, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
 import { supabase } from "../lib/supabase";
 
@@ -12,7 +12,18 @@ const STATUS_STYLES = {
   overdue: "bg-rose-100 text-rose-800",
 };
 
-const INVOICE_FILTERS = ["all", "draft", "pending", "paid"];
+const INVOICE_FILTERS = ["all", "draft", "pending", "paid", "overdue"];
+
+const TIMEZONE_OPTIONS = [
+  "Asia/Kolkata",
+  "UTC",
+  "Europe/London",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Asia/Dubai",
+  "Asia/Singapore",
+  "Australia/Sydney",
+];
 
 function getTodayDateString() {
   return new Date().toISOString().split("T")[0];
@@ -42,7 +53,12 @@ function createInitialForm() {
     dueDate: getFutureDateString(14),
     status: "draft",
     currency: "INR",
+    timezone: "Asia/Kolkata",
+    taxEnabled: true,
+    taxLabel: "Tax",
     taxRate: "18",
+    gstEnabled: false,
+    reminderEnabled: true,
     notes: "",
     items: [createEmptyItem()],
   };
@@ -54,10 +70,12 @@ function createBrandProfile(accountEmail = "") {
     companyEmail: accountEmail,
     companyAddress: "",
     logoDataUrl: "",
-    paymentInstructions: "Please make payment within the due date mentioned on this invoice.",
+    paymentInstructions:
+      "Please make payment within the due date mentioned on this invoice.",
     bankDetails: "",
     signatoryName: "",
     footerNote: "Thank you for your business.",
+    gstNumber: "",
   };
 }
 
@@ -85,23 +103,30 @@ function formatCurrencyAmount(value) {
 }
 
 function formatPdfMoney(value, currency = "INR") {
-  const currencySymbols = {
-    INR: "INR",
-    USD: "USD",
-    EUR: "EUR",
-    GBP: "GBP",
-  };
-
-  return `${currencySymbols[currency] || currency} ${formatCurrencyAmount(value)}`;
+  return `${currency} ${formatCurrencyAmount(value)}`;
 }
 
-function formatDate(value) {
+function formatDate(value, timeZone = "UTC") {
   if (!value) return "Not set";
 
   return new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone,
+  }).format(new Date(`${value}T12:00:00.000Z`));
+}
+
+function formatDateTime(value, timeZone = "UTC") {
+  if (!value) return "";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone,
   }).format(new Date(value));
 }
 
@@ -109,7 +134,6 @@ function summarizeTotalsByCurrency(invoices) {
   const totals = invoices.reduce((accumulator, invoice) => {
     const currency = invoice.currency || "INR";
     const amount = Number(invoice.total_amount ?? invoice.amount ?? 0);
-
     accumulator[currency] = (accumulator[currency] || 0) + amount;
     return accumulator;
   }, {});
@@ -129,14 +153,10 @@ function normalizeInvoice(inv) {
       : [
           {
             description: inv.project_description || inv.client || "Invoice item",
-            quantity: "1",
+            quantity: 1,
             rate: inv.total_amount ?? inv.amount ?? 0,
           },
         ];
-
-  const subtotal = Number(inv.subtotal ?? inv.amount ?? inv.total_amount ?? 0);
-  const taxAmount = Number(inv.tax_amount ?? 0);
-  const totalAmount = Number(inv.total_amount ?? inv.amount ?? 0);
 
   return {
     ...inv,
@@ -148,12 +168,21 @@ function normalizeInvoice(inv) {
     due_date: inv.due_date || "",
     status: inv.status === "sent" ? "pending" : inv.status || "draft",
     currency: inv.currency || "INR",
+    timezone: inv.timezone || "Asia/Kolkata",
+    tax_enabled:
+      typeof inv.tax_enabled === "boolean" ? inv.tax_enabled : true,
+    tax_label: inv.tax_label || "Tax",
     tax_rate: Number(inv.tax_rate ?? 0),
-    subtotal,
-    tax_amount: taxAmount,
-    total_amount: totalAmount,
+    gst_enabled:
+      typeof inv.gst_enabled === "boolean" ? inv.gst_enabled : false,
+    reminder_enabled:
+      typeof inv.reminder_enabled === "boolean" ? inv.reminder_enabled : true,
+    subtotal: Number(inv.subtotal ?? inv.amount ?? inv.total_amount ?? 0),
+    tax_amount: Number(inv.tax_amount ?? 0),
+    total_amount: Number(inv.total_amount ?? inv.amount ?? 0),
     notes: inv.notes || "",
     items,
+    last_reminder_sent_at: inv.last_reminder_sent_at || null,
   };
 }
 
@@ -169,10 +198,15 @@ function invoiceToForm(invoice) {
     dueDate: normalized.due_date || getFutureDateString(14),
     status: normalized.status,
     currency: normalized.currency,
+    timezone: normalized.timezone,
+    taxEnabled: normalized.tax_enabled,
+    taxLabel: normalized.tax_label,
     taxRate: String(normalized.tax_rate ?? 0),
+    gstEnabled: normalized.gst_enabled,
+    reminderEnabled: normalized.reminder_enabled,
     notes: normalized.notes || "",
     items:
-      normalized.items?.map((item) => ({
+      normalized.items.map((item) => ({
         description: item.description || "",
         quantity: String(item.quantity ?? 1),
         rate: String(item.rate ?? 0),
@@ -189,12 +223,24 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function buildWhatsAppText(invoice, brandProfile) {
+  const normalized = normalizeInvoice(invoice);
+  const lines = [
+    `${brandProfile.companyName || "ForgeInvoice"} invoice ${normalized.invoice_number}`,
+    `Client: ${normalized.client_name}`,
+    `Amount: ${formatCurrency(normalized.total_amount, normalized.currency)}`,
+    `Due: ${formatDate(normalized.due_date, normalized.timezone)}`,
+    brandProfile.paymentInstructions || "",
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
 async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   const pdf = new jsPDF({ unit: "pt", format: "a4" });
   const normalized = normalizeInvoice(invoice);
   const brand = brandProfile || createBrandProfile(accountEmail);
   let y = 56;
-  const pageWidth = 595;
   const leftX = 44;
   const rightX = 551;
   const quantityX = 360;
@@ -203,9 +249,10 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   const summaryBoxX = 334;
   const summaryBoxWidth = 217;
   const pageBottom = 770;
+  const taxLabel = normalized.gst_enabled ? "GST" : normalized.tax_label;
 
   pdf.setFillColor(22, 33, 62);
-  pdf.rect(0, 0, pageWidth, 120, "F");
+  pdf.rect(0, 0, 595, 120, "F");
 
   if (brand.logoDataUrl) {
     const imageFormat = brand.logoDataUrl.includes("image/jpeg") ? "JPEG" : "PNG";
@@ -229,46 +276,58 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   pdf.setFont("helvetica", "bold");
   pdf.text(`Invoice ${normalized.invoice_number}`, 44, y);
   y += 28;
+
   pdf.setFillColor(248, 250, 252);
-  pdf.roundedRect(leftX, y - 18, 240, 96, 12, 12, "F");
-  pdf.roundedRect(312, y - 18, 239, 96, 12, 12, "F");
+  pdf.roundedRect(leftX, y - 18, 240, 104, 12, 12, "F");
+  pdf.roundedRect(312, y - 18, 239, 104, 12, 12, "F");
   pdf.setDrawColor(226, 232, 240);
-  pdf.roundedRect(leftX, y - 18, 240, 96, 12, 12);
-  pdf.roundedRect(312, y - 18, 239, 96, 12, 12);
-  pdf.setFontSize(10);
+  pdf.roundedRect(leftX, y - 18, 240, 104, 12, 12);
+  pdf.roundedRect(312, y - 18, 239, 104, 12, 12);
+
   pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(10);
   pdf.text("From", 60, y);
   pdf.text("Bill To", 328, y);
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(11);
   pdf.text(brand.companyName || "ForgeInvoice", 60, y + 22);
-  if (brand.companyAddress) {
-    pdf.text(brand.companyAddress, 60, y + 40, { maxWidth: 200 });
-  }
-  pdf.text(brand.companyEmail || accountEmail || "your-team@example.com", 60, y + 72);
+  pdf.text(
+    brand.companyAddress || "Add your sender address in the brand profile.",
+    60,
+    y + 40,
+    { maxWidth: 200 }
+  );
+  pdf.text(brand.companyEmail || accountEmail || "your-team@example.com", 60, y + 78);
   pdf.text(normalized.client_name, 328, y + 22);
-  if (normalized.client_address) {
-    pdf.text(normalized.client_address, 328, y + 40, { maxWidth: 190 });
-  }
+  pdf.text(
+    normalized.client_address || "Add the client billing address in the invoice form.",
+    328,
+    y + 40,
+    { maxWidth: 190 }
+  );
   if (normalized.client_email) {
-    pdf.text(normalized.client_email, 328, y + 72);
+    pdf.text(normalized.client_email, 328, y + 78);
   }
 
-  y += 116;
+  y += 124;
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(10);
   pdf.text("Issue Date", 44, y);
   pdf.text("Due Date", 170, y);
   pdf.text("Status", 296, y);
-  pdf.text("Currency", 408, y);
+  pdf.text("Timezone", 408, y);
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(11);
-  pdf.text(formatDate(normalized.issue_date), 44, y + 20);
-  pdf.text(formatDate(normalized.due_date), 170, y + 20);
+  pdf.text(formatDate(normalized.issue_date, normalized.timezone), 44, y + 20);
+  pdf.text(formatDate(normalized.due_date, normalized.timezone), 170, y + 20);
   pdf.text(normalized.status.toUpperCase(), 296, y + 20);
-  pdf.text(normalized.currency, 408, y + 20);
+  pdf.text(normalized.timezone, 408, y + 20);
 
-  y += 54;
+  if (normalized.gst_enabled && brand.gstNumber) {
+    pdf.text(`GSTIN: ${brand.gstNumber}`, 44, y + 42);
+  }
+
+  y += 66;
   pdf.setFillColor(247, 248, 252);
   pdf.roundedRect(leftX, y - 18, rightX - leftX, 30, 8, 8, "F");
   pdf.setDrawColor(226, 232, 240);
@@ -307,38 +366,53 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
     y += 10;
   });
 
+  const summaryHeight = normalized.tax_enabled ? 108 : 82;
   y += 14;
   pdf.setFillColor(249, 250, 251);
-  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, 86, 12, 12, "F");
+  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, summaryHeight, 12, 12, "F");
   pdf.setDrawColor(226, 232, 240);
-  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, 86, 12, 12);
+  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, summaryHeight, 12, 12);
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(11);
   pdf.text("Subtotal", 354, y + 16);
   pdf.text(formatPdfMoney(normalized.subtotal, normalized.currency), amountX, y + 16, {
     align: "right",
   });
-  pdf.setFont("helvetica", "normal");
-  pdf.text("Tax", 354, y + 40);
-  pdf.text(formatPdfMoney(normalized.tax_amount, normalized.currency), amountX, y + 40, {
-    align: "right",
-  });
-  pdf.setDrawColor(226, 232, 240);
-  pdf.line(summaryBoxX + 16, y + 51, amountX - 16, y + 51);
+
+  let summaryOffset = 40;
+  if (normalized.tax_enabled) {
+    pdf.setFont("helvetica", "normal");
+    pdf.text(taxLabel, 354, y + 40);
+    pdf.text(
+      formatPdfMoney(normalized.tax_amount, normalized.currency),
+      amountX,
+      y + 40,
+      { align: "right" }
+    );
+    pdf.setDrawColor(226, 232, 240);
+    pdf.line(summaryBoxX + 16, y + 52, amountX - 16, y + 52);
+    summaryOffset = 74;
+  } else {
+    pdf.setDrawColor(226, 232, 240);
+    pdf.line(summaryBoxX + 16, y + 36, amountX - 16, y + 36);
+  }
+
   pdf.setFontSize(14);
   pdf.setFont("helvetica", "bold");
-  pdf.text("Total", 354, y + 74);
-  pdf.text(formatPdfMoney(normalized.total_amount, normalized.currency), amountX, y + 74, {
-    align: "right",
-  });
-  y += 106;
+  pdf.text("Total", 354, y + summaryOffset);
+  pdf.text(
+    formatPdfMoney(normalized.total_amount, normalized.currency),
+    amountX,
+    y + summaryOffset,
+    { align: "right" }
+  );
+  y += summaryHeight + 20;
 
   const notesHeight = normalized.notes ? 72 : 0;
   const paymentHeight =
-    brand.paymentInstructions || brand.bankDetails ? 96 : 0;
+    brand.paymentInstructions || brand.bankDetails ? 100 : 0;
   const footerHeight = brand.signatoryName || brand.footerNote ? 70 : 0;
-  const reservedHeight = notesHeight + paymentHeight + footerHeight + 40;
-  if (y + reservedHeight > pageBottom) {
+  if (y + notesHeight + paymentHeight + footerHeight > pageBottom) {
     pdf.addPage();
     y = 56;
   }
@@ -348,14 +422,13 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
     pdf.roundedRect(44, y - 16, 507, 62, 12, 12, "F");
     pdf.setDrawColor(226, 232, 240);
     pdf.roundedRect(44, y - 16, 507, 62, 12, 12);
-    pdf.setFontSize(12);
     pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(12);
     pdf.text("Notes", 60, y);
-    y += 18;
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(11);
-    pdf.text(normalized.notes, 60, y, { maxWidth: 470 });
-    y += 54;
+    pdf.text(normalized.notes, 60, y + 18, { maxWidth: 470 });
+    y += 74;
   }
 
   if (brand.paymentInstructions || brand.bankDetails) {
@@ -380,7 +453,7 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
     pdf.text(brand.bankDetails || "Add your bank details in the workspace.", 320, y + 20, {
       maxWidth: 200,
     });
-    y += 96;
+    y += 98;
   }
 
   if (brand.signatoryName || brand.footerNote) {
@@ -389,18 +462,16 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(10);
     pdf.text(brand.signatoryName || "Authorized Signatory", 60, y + 46);
-    pdf.text(
-      brand.footerNote || "Thank you for your business.",
-      551,
-      y + 46,
-      { align: "right" }
-    );
+    pdf.text(brand.footerNote || "Thank you for your business.", 551, y + 46, {
+      align: "right",
+    });
   }
 
   pdf.save(`${normalized.invoice_number}.pdf`);
 }
 
 export default function Home() {
+  const [authReady, setAuthReady] = useState(!supabase);
   const [user, setUser] = useState(null);
   const [form, setForm] = useState(createInitialForm);
   const [brandProfile, setBrandProfile] = useState(createBrandProfile);
@@ -410,19 +481,27 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [dataError, setDataError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
+  const [reminderMessage, setReminderMessage] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(null);
+  const [isSendingReminder, setIsSendingReminder] = useState(null);
   const configError = !supabase
     ? "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel project settings."
     : "";
 
-  const subtotal = form.items.reduce((sum, item) => {
-    return sum + Number(item.quantity || 0) * Number(item.rate || 0);
-  }, 0);
-  const taxAmount = subtotal * (Number(form.taxRate || 0) / 100);
+  const subtotal = useMemo(
+    () =>
+      form.items.reduce(
+        (sum, item) => sum + Number(item.quantity || 0) * Number(item.rate || 0),
+        0
+      ),
+    [form.items]
+  );
+  const taxRateNumber = Number(form.taxRate || 0);
+  const taxAmount = form.taxEnabled ? subtotal * (taxRateNumber / 100) : 0;
   const totalAmount = subtotal + taxAmount;
   const paidInvoices = invoices.filter((invoice) => invoice.status === "paid");
   const filteredInvoices = invoices.filter((invoice) => {
@@ -448,7 +527,7 @@ export default function Home() {
     }
 
     if (normalized.includes("column") || normalized.includes("schema cache")) {
-      return "Your database is still using the older invoices schema. Run the new migration before saving advanced invoices.";
+      return "Your database schema is missing the latest invoice fields. Run the new migration before using the new controls.";
     }
 
     return message || `Unable to ${action}. Please try again.`;
@@ -476,15 +555,39 @@ export default function Home() {
   useEffect(() => {
     if (!supabase) return;
 
+    let mounted = true;
+
     const getUser = async () => {
       const { data } = await supabase.auth.getSession();
-      if (data.session) {
+      if (!mounted) return;
+
+      if (data.session?.user) {
         setUser(data.session.user);
         fetchInvoices(data.session.user.id);
       }
+
+      setAuthReady(true);
     };
 
     getUser();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+          fetchInvoices(session.user.id);
+        } else {
+          setUser(null);
+          setInvoices([]);
+        }
+        setAuthReady(true);
+      }
+    );
+
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
   }, [fetchInvoices]);
 
   useEffect(() => {
@@ -547,24 +650,6 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [brandProfile, editingInvoiceId, form, user]);
 
-  useEffect(() => {
-    if (!supabase) return;
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (session?.user) {
-          setUser(session.user);
-          fetchInvoices(session.user.id);
-        } else {
-          setUser(null);
-          setInvoices([]);
-        }
-      }
-    );
-
-    return () => listener.subscription.unsubscribe();
-  }, [fetchInvoices]);
-
   const login = async () => {
     if (!supabase) return;
 
@@ -602,11 +687,27 @@ export default function Home() {
     setInvoices([]);
     setDataError("");
     setSaveSuccess("");
+    setReminderMessage("");
     setEditingInvoiceId(null);
   };
 
   const updateFormField = (field, value) => {
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => {
+      if (field === "gstEnabled") {
+        return {
+          ...current,
+          gstEnabled: value,
+          taxEnabled: value ? true : current.taxEnabled,
+          taxLabel: value ? "GST" : current.taxLabel || "Tax",
+        };
+      }
+
+      if (field === "taxEnabled" && !value) {
+        return { ...current, taxEnabled: false };
+      }
+
+      return { ...current, [field]: value };
+    });
   };
 
   const updateBrandField = (field, value) => {
@@ -644,6 +745,7 @@ export default function Home() {
     setEditingInvoiceId(null);
     setDataError("");
     setSaveSuccess("");
+    setReminderMessage("");
 
     if (user) {
       window.localStorage.removeItem(getDraftStorageKey(user.id));
@@ -655,6 +757,8 @@ export default function Home() {
     setForm(invoiceToForm(invoice));
     setSaveSuccess(`Editing ${invoice.invoice_number}.`);
     setDataError("");
+    setReminderMessage("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handleLogoUpload = async (event) => {
@@ -667,6 +771,109 @@ export default function Home() {
     } catch (error) {
       setDataError(error.message || "Unable to upload logo.");
     }
+  };
+
+  const validateForm = () => {
+    if (!form.clientName.trim()) {
+      return "Add a client name before saving.";
+    }
+
+    if (!form.items.some((item) => item.description.trim())) {
+      return "Add at least one line item description.";
+    }
+
+    if (
+      form.items.some(
+        (item) => Number(item.quantity || 0) <= 0 || Number(item.rate || 0) < 0
+      )
+    ) {
+      return "Each line item needs a quantity above 0 and a valid rate.";
+    }
+
+    if (form.gstEnabled && !brandProfile.gstNumber.trim()) {
+      return "Add your GST number in the brand profile before saving a GST invoice.";
+    }
+
+    return "";
+  };
+
+  const saveInvoice = async () => {
+    if (!supabase || !user) return;
+
+    const validationError = validateForm();
+    if (validationError) {
+      setDataError(validationError);
+      return;
+    }
+
+    const cleanedItems = form.items
+      .filter((item) => item.description.trim())
+      .map((item) => ({
+        description: item.description.trim(),
+        quantity: Number(item.quantity || 0),
+        rate: Number(item.rate || 0),
+      }));
+
+    const payload = {
+      user_id: user.id,
+      invoice_number: form.invoiceNumber.trim(),
+      client: form.clientName.trim(),
+      client_name: form.clientName.trim(),
+      client_email: form.clientEmail.trim(),
+      client_address: form.clientAddress.trim(),
+      issue_date: form.issueDate,
+      due_date: form.dueDate,
+      status: form.status,
+      currency: form.currency,
+      timezone: form.timezone,
+      tax_enabled: form.taxEnabled,
+      tax_label: form.gstEnabled ? "GST" : form.taxLabel.trim() || "Tax",
+      tax_rate: form.taxEnabled ? taxRateNumber : 0,
+      gst_enabled: form.gstEnabled,
+      reminder_enabled: form.reminderEnabled,
+      subtotal,
+      tax_amount: form.taxEnabled ? taxAmount : 0,
+      total_amount,
+      amount: totalAmount,
+      notes: form.notes.trim(),
+      items: cleanedItems,
+    };
+
+    setDataError("");
+    setSaveSuccess("");
+    setReminderMessage("");
+    setIsSaving(true);
+
+    const query = editingInvoiceId
+      ? supabase
+          .from("invoices")
+          .update(payload)
+          .eq("id", editingInvoiceId)
+          .eq("user_id", user.id)
+      : supabase.from("invoices").insert([payload]);
+
+    const { error } = await query;
+    setIsSaving(false);
+
+    if (error) {
+      setDataError(getFriendlySupabaseError(error, "save invoice"));
+      return;
+    }
+
+    setSaveSuccess(
+      editingInvoiceId
+        ? `Invoice ${payload.invoice_number} updated successfully.`
+        : `Invoice ${payload.invoice_number} saved successfully.`
+    );
+
+    if (user) {
+      window.localStorage.removeItem(getDraftStorageKey(user.id));
+    }
+
+    setForm(createInitialForm());
+    setEditingInvoiceId(null);
+    setLastDraftSavedAt("");
+    fetchInvoices(user.id);
   };
 
   const updateInvoiceStatus = async (invoiceId, nextStatus) => {
@@ -695,96 +902,66 @@ export default function Home() {
     );
   };
 
-  const validateForm = () => {
-    if (!form.clientName.trim()) {
-      return "Add a client name before saving.";
+  const sendReminderNow = async (invoiceId) => {
+    const invoice = invoices.find((item) => item.id === invoiceId);
+    if (!invoice || !supabase) return;
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    setIsSendingReminder(invoiceId);
+    setReminderMessage("");
+    setDataError("");
+
+    const response = await fetch("/api/reminders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: session?.access_token ? `Bearer ${session.access_token}` : "",
+      },
+      body: JSON.stringify({
+        invoiceId,
+        brandProfile,
+      }),
+    });
+
+    const result = await response.json();
+    setIsSendingReminder(null);
+
+    if (!response.ok) {
+      setDataError(result.error || "Unable to send reminder.");
+      return;
     }
 
-    if (!form.items.some((item) => item.description.trim())) {
-      return "Add at least one line item description.";
-    }
-
-    if (
-      form.items.some(
-        (item) => Number(item.quantity || 0) <= 0 || Number(item.rate || 0) < 0
-      )
-    ) {
-      return "Each line item needs a quantity above 0 and a valid rate.";
-    }
-
-    return "";
+    setReminderMessage(result.message || `Reminder sent for ${invoice.invoice_number}.`);
+    fetchInvoices(user.id);
   };
 
-  const saveInvoice = async () => {
-    if (!supabase || !user) return;
+  const shareViaWhatsApp = (invoice) => {
+    const text = buildWhatsAppText(invoice, brandProfile);
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+  };
 
-    const validationError = validateForm();
-    if (validationError) {
-      setDataError(validationError);
-      return;
-    }
-
-    const cleanedItems = form.items
-      .filter((item) => item.description.trim())
-      .map((item) => ({
-        description: item.description.trim(),
-        quantity: Number(item.quantity || 0),
-        rate: Number(item.rate || 0),
-      }));
-
-    setDataError("");
-    setSaveSuccess("");
-    setIsSaving(true);
-
-    const payload = {
-      user_id: user.id,
-      invoice_number: form.invoiceNumber.trim(),
-      client: form.clientName.trim(),
-      client_name: form.clientName.trim(),
-      client_email: form.clientEmail.trim(),
-      client_address: form.clientAddress.trim(),
-      issue_date: form.issueDate,
-      due_date: form.dueDate,
-      status: form.status,
-      currency: form.currency,
-      tax_rate: Number(form.taxRate || 0),
-      subtotal,
-      tax_amount: taxAmount,
-      total_amount: totalAmount,
-      amount: totalAmount,
-      notes: form.notes.trim(),
-      items: cleanedItems,
-    };
-
-    const query = editingInvoiceId
-      ? supabase
-          .from("invoices")
-          .update(payload)
-          .eq("id", editingInvoiceId)
-          .eq("user_id", user.id)
-      : supabase.from("invoices").insert([payload]);
-
-    const { error } = await query;
-
-    setIsSaving(false);
-
-    if (error) {
-      setDataError(getFriendlySupabaseError(error, "save invoice"));
-      return;
-    }
-
-    setSaveSuccess(
-      editingInvoiceId
-        ? `Invoice ${payload.invoice_number} updated successfully.`
-        : `Invoice ${payload.invoice_number} saved successfully.`
-    );
-    if (user) {
-      window.localStorage.removeItem(getDraftStorageKey(user.id));
-    }
-    setForm(createInitialForm());
-    setEditingInvoiceId(null);
-    setLastDraftSavedAt("");
-    fetchInvoices(user.id);
+  const previewInvoicePayload = {
+    invoice_number: form.invoiceNumber,
+    client_name: form.clientName,
+    client_email: form.clientEmail,
+    client_address: form.clientAddress,
+    issue_date: form.issueDate,
+    due_date: form.dueDate,
+    status: form.status,
+    currency: form.currency,
+    timezone: form.timezone,
+    tax_enabled: form.taxEnabled,
+    tax_label: form.gstEnabled ? "GST" : form.taxLabel,
+    tax_rate: taxRateNumber,
+    gst_enabled: form.gstEnabled,
+    subtotal,
+    tax_amount: taxAmount,
+    total_amount: totalAmount,
+    notes: form.notes,
+    items: form.items,
   };
 
   if (configError) {
@@ -797,6 +974,24 @@ export default function Home() {
           <p className="mt-4 text-base text-rose-700">{configError}</p>
         </div>
       </div>
+    );
+  }
+
+  if (!authReady) {
+    return (
+      <main className="min-h-screen px-6 py-10">
+        <div className="mx-auto max-w-6xl rounded-[36px] border border-slate-200/80 bg-white/80 p-10 shadow-[0_40px_120px_rgba(15,23,42,0.10)]">
+          <p className="text-sm uppercase tracking-[0.24em] text-slate-500">
+            ForgeInvoice
+          </p>
+          <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-950">
+            Restoring your workspace
+          </h1>
+          <p className="mt-4 text-slate-600">
+            Checking your session and loading your invoices.
+          </p>
+        </div>
+      </main>
     );
   }
 
@@ -814,24 +1009,23 @@ export default function Home() {
                 Build invoices that feel ready for real clients.
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-8 text-slate-600">
-                ForgeInvoice helps you log in fast, capture rich invoice details,
-                track payment status, and export polished PDFs without leaving the
-                browser.
+                Google sign-in, saved sessions, reminders, mobile-ready actions,
+                and premium PDF invoices for freelancers working across borders.
               </p>
             </div>
 
             <div className="mt-12 grid gap-4 sm:grid-cols-3">
               <div className="rounded-3xl border border-white/70 bg-white/70 p-5 backdrop-blur">
-                <p className="text-sm text-slate-500">Line items</p>
-                <p className="mt-3 text-3xl font-semibold text-slate-900">Multi</p>
+                <p className="text-sm text-slate-500">Currencies</p>
+                <p className="mt-3 text-3xl font-semibold text-slate-900">Global</p>
               </div>
               <div className="rounded-3xl border border-white/70 bg-white/70 p-5 backdrop-blur">
                 <p className="text-sm text-slate-500">Export</p>
-                <p className="mt-3 text-3xl font-semibold text-slate-900">PDF</p>
+                <p className="mt-3 text-3xl font-semibold text-slate-900">Premium PDF</p>
               </div>
               <div className="rounded-3xl border border-white/70 bg-white/70 p-5 backdrop-blur">
-                <p className="text-sm text-slate-500">Status</p>
-                <p className="mt-3 text-3xl font-semibold text-slate-900">Live</p>
+                <p className="text-sm text-slate-500">Sharing</p>
+                <p className="mt-3 text-3xl font-semibold text-slate-900">Email + WhatsApp</p>
               </div>
             </div>
           </section>
@@ -845,14 +1039,13 @@ export default function Home() {
                 Sign in with Google
               </h2>
               <p className="mt-3 text-base leading-7 text-slate-600">
-                Use your Google account to create, track, and export invoices
-                from one workspace.
+                Your session stays persistent, and logout clears the workspace cleanly.
               </p>
 
               <button
                 onClick={login}
                 disabled={isLoggingIn}
-                className="mt-8 inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-8 inline-flex min-h-14 w-full items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isLoggingIn ? "Starting login..." : "Continue with Google"}
               </button>
@@ -870,7 +1063,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen px-4 py-6 sm:px-6 sm:py-8">
+    <main className="min-h-screen px-4 py-6 pb-28 sm:px-6 sm:py-8 sm:pb-10">
       <div className="mx-auto max-w-7xl">
         <section className="overflow-hidden rounded-[32px] border border-slate-200/80 bg-[linear-gradient(135deg,_rgba(255,255,255,0.88),_rgba(247,250,255,0.95)_46%,_rgba(255,248,235,0.96))] p-6 shadow-[0_30px_100px_rgba(15,23,42,0.10)] backdrop-blur sm:p-8">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
@@ -882,21 +1075,21 @@ export default function Home() {
                 Ship sharper invoices, faster.
               </h1>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-base">
-                Create detailed invoices with line items, due dates, taxes, notes,
-                and downloadable PDFs. Signed in as {user.email}.
+                Create international-ready invoices with optional GST, reminders,
+                WhatsApp sharing, and premium PDF exports. Signed in as {user.email}.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
               <button
                 onClick={resetDraft}
-                className="rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
               >
                 {editingInvoiceId ? "Cancel edit" : "Reset draft"}
               </button>
               <button
                 onClick={logout}
-                className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+                className="min-h-12 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
               >
                 Logout
               </button>
@@ -906,9 +1099,7 @@ export default function Home() {
           <div className="mt-8 grid gap-4 md:grid-cols-3">
             <div className="rounded-3xl border border-white/80 bg-white/75 p-5">
               <p className="text-sm text-slate-500">Invoices created</p>
-              <p className="mt-3 text-3xl font-semibold text-slate-950">
-                {invoices.length}
-              </p>
+              <p className="mt-3 text-3xl font-semibold text-slate-950">{invoices.length}</p>
             </div>
             <div className="rounded-3xl border border-white/80 bg-white/75 p-5">
               <p className="text-sm text-slate-500">Collected</p>
@@ -955,14 +1146,10 @@ export default function Home() {
 
               <div className="mt-8 grid gap-4 md:grid-cols-2">
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Invoice number
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Invoice number</span>
                   <input
                     value={form.invoiceNumber}
-                    onChange={(event) =>
-                      updateFormField("invoiceNumber", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("invoiceNumber", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
@@ -971,9 +1158,7 @@ export default function Home() {
                   <span className="text-sm font-medium text-slate-700">Status</span>
                   <select
                     value={form.status}
-                    onChange={(event) =>
-                      updateFormField("status", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("status", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   >
                     <option value="draft">Draft</option>
@@ -984,73 +1169,53 @@ export default function Home() {
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Client name
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Client name</span>
                   <input
                     value={form.clientName}
-                    onChange={(event) =>
-                      updateFormField("clientName", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("clientName", event.target.value)}
                     placeholder="Aster Studio"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Client email
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Client email</span>
                   <input
                     type="email"
                     value={form.clientEmail}
-                    onChange={(event) =>
-                      updateFormField("clientEmail", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("clientEmail", event.target.value)}
                     placeholder="finance@aster.studio"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2 md:col-span-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Client address
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Bill To address</span>
                   <textarea
                     rows={3}
                     value={form.clientAddress}
-                    onChange={(event) =>
-                      updateFormField("clientAddress", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("clientAddress", event.target.value)}
                     placeholder="22 Residency Road, Bengaluru, Karnataka"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Issue date
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Issue date</span>
                   <input
                     type="date"
                     value={form.issueDate}
-                    onChange={(event) =>
-                      updateFormField("issueDate", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("issueDate", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Due date
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Due date</span>
                   <input
                     type="date"
                     value={form.dueDate}
-                    onChange={(event) =>
-                      updateFormField("dueDate", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("dueDate", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
@@ -1059,9 +1224,7 @@ export default function Home() {
                   <span className="text-sm font-medium text-slate-700">Currency</span>
                   <select
                     value={form.currency}
-                    onChange={(event) =>
-                      updateFormField("currency", event.target.value)
-                    }
+                    onChange={(event) => updateFormField("currency", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   >
                     <option value="INR">INR</option>
@@ -1072,18 +1235,101 @@ export default function Home() {
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Tax rate %
-                  </span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.taxRate}
-                    onChange={(event) =>
-                      updateFormField("taxRate", event.target.value)
-                    }
+                  <span className="text-sm font-medium text-slate-700">Timezone</span>
+                  <select
+                    value={form.timezone}
+                    onChange={(event) => updateFormField("timezone", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  >
+                    {TIMEZONE_OPTIONS.map((timezone) => (
+                      <option key={timezone} value={timezone}>
+                        {timezone}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 md:col-span-2">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="flex min-h-14 items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <span className="text-sm font-medium text-slate-700">Enable tax</span>
+                      <input
+                        type="checkbox"
+                        checked={form.taxEnabled}
+                        onChange={(event) => updateFormField("taxEnabled", event.target.checked)}
+                        className="h-5 w-5"
+                      />
+                    </label>
+
+                    <label className="flex min-h-14 items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <span className="text-sm font-medium text-slate-700">GST invoice</span>
+                      <input
+                        type="checkbox"
+                        checked={form.gstEnabled}
+                        onChange={(event) => updateFormField("gstEnabled", event.target.checked)}
+                        className="h-5 w-5"
+                      />
+                    </label>
+
+                    {form.taxEnabled ? (
+                      <>
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium text-slate-700">
+                            {form.gstEnabled ? "GST rate %" : "Tax label"}
+                          </span>
+                          {form.gstEnabled ? (
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={form.taxRate}
+                              onChange={(event) => updateFormField("taxRate", event.target.value)}
+                              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                            />
+                          ) : (
+                            <input
+                              value={form.taxLabel}
+                              onChange={(event) => updateFormField("taxLabel", event.target.value)}
+                              placeholder="Tax"
+                              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                            />
+                          )}
+                        </label>
+
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium text-slate-700">
+                            {form.gstEnabled ? "GST rate %" : "Tax rate %"}
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={form.taxRate}
+                            onChange={(event) => updateFormField("taxRate", event.target.value)}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-4 text-sm text-slate-500 md:col-span-2">
+                        Tax is off for this invoice. Totals will render without GST or any other tax line.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <label className="flex min-h-14 items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 md:col-span-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">Automatic email reminder</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Sends when due soon or overdue once reminders are configured on the backend.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={form.reminderEnabled}
+                    onChange={(event) => updateFormField("reminderEnabled", event.target.checked)}
+                    className="h-5 w-5"
                   />
                 </label>
               </div>
@@ -1100,7 +1346,7 @@ export default function Home() {
                   </div>
                   <button
                     onClick={addItem}
-                    className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                    className="min-h-12 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
                   >
                     Add item
                   </button>
@@ -1113,47 +1359,35 @@ export default function Home() {
                       className="grid gap-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 md:grid-cols-[1.6fr_0.5fr_0.6fr_auto]"
                     >
                       <label className="space-y-2">
-                        <span className="text-sm font-medium text-slate-700">
-                          Description
-                        </span>
+                        <span className="text-sm font-medium text-slate-700">Description</span>
                         <input
                           value={item.description}
-                          onChange={(event) =>
-                            updateItem(index, "description", event.target.value)
-                          }
+                          onChange={(event) => updateItem(index, "description", event.target.value)}
                           placeholder="Brand strategy sprint"
                           className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
                         />
                       </label>
 
                       <label className="space-y-2">
-                        <span className="text-sm font-medium text-slate-700">
-                          Qty
-                        </span>
+                        <span className="text-sm font-medium text-slate-700">Qty</span>
                         <input
                           type="number"
                           min="0"
                           step="1"
                           value={item.quantity}
-                          onChange={(event) =>
-                            updateItem(index, "quantity", event.target.value)
-                          }
+                          onChange={(event) => updateItem(index, "quantity", event.target.value)}
                           className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
                         />
                       </label>
 
                       <label className="space-y-2">
-                        <span className="text-sm font-medium text-slate-700">
-                          Rate
-                        </span>
+                        <span className="text-sm font-medium text-slate-700">Rate</span>
                         <input
                           type="number"
                           min="0"
                           step="0.01"
                           value={item.rate}
-                          onChange={(event) =>
-                            updateItem(index, "rate", event.target.value)
-                          }
+                          onChange={(event) => updateItem(index, "rate", event.target.value)}
                           className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
                         />
                       </label>
@@ -1162,7 +1396,7 @@ export default function Home() {
                         <button
                           onClick={() => removeItem(index)}
                           disabled={form.items.length === 1}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="min-h-12 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Remove
                         </button>
@@ -1177,54 +1411,11 @@ export default function Home() {
                 <textarea
                   rows={4}
                   value={form.notes}
-                  onChange={(event) =>
-                    updateFormField("notes", event.target.value)
-                  }
+                  onChange={(event) => updateFormField("notes", event.target.value)}
                   placeholder="Payment due within 14 days. Bank details available on request."
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                 />
               </label>
-
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <button
-                  onClick={saveInvoice}
-                  disabled={isSaving}
-                  className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSaving
-                    ? editingInvoiceId
-                      ? "Updating invoice..."
-                      : "Saving invoice..."
-                    : editingInvoiceId
-                      ? "Update invoice"
-                      : "Save invoice"}
-                </button>
-
-                <button
-                  onClick={() =>
-                    downloadInvoicePdf(
-                      {
-                        invoice_number: form.invoiceNumber,
-                        client_name: form.clientName,
-                        issue_date: form.issueDate,
-                        due_date: form.dueDate,
-                        status: form.status,
-                        currency: form.currency,
-                        subtotal,
-                        tax_amount: taxAmount,
-                        total_amount: totalAmount,
-                        notes: form.notes,
-                        items: form.items,
-                      },
-                      brandProfile,
-                      user.email
-                    )
-                  }
-                  className="inline-flex items-center justify-center rounded-2xl border border-slate-300 bg-white px-6 py-4 text-base font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-                >
-                  Preview PDF
-                </button>
-              </div>
 
               {dataError ? (
                 <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -1237,35 +1428,35 @@ export default function Home() {
                   {saveSuccess}
                 </p>
               ) : null}
+
+              {reminderMessage ? (
+                <p className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
+                  {reminderMessage}
+                </p>
+              ) : null}
             </div>
           </div>
 
           <div className="space-y-6">
             <div className="rounded-[32px] border border-slate-200/80 bg-slate-950 p-6 text-white shadow-[0_24px_80px_rgba(15,23,42,0.16)] sm:p-8">
-              <p className="text-sm uppercase tracking-[0.22em] text-slate-400">
-                Live summary
-              </p>
+              <p className="text-sm uppercase tracking-[0.22em] text-slate-400">Live summary</p>
               <h2 className="mt-3 text-2xl font-semibold tracking-tight">
                 {form.clientName || "New client draft"}
               </h2>
               <div className="mt-8 space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-4">
                   <span className="text-slate-400">Subtotal</span>
-                  <span className="text-lg font-medium">
-                    {formatCurrency(subtotal, form.currency)}
-                  </span>
+                  <span className="text-lg font-medium">{formatCurrency(subtotal, form.currency)}</span>
                 </div>
-                <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                  <span className="text-slate-400">Tax</span>
-                  <span className="text-lg font-medium">
-                    {formatCurrency(taxAmount, form.currency)}
-                  </span>
-                </div>
+                {form.taxEnabled ? (
+                  <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                    <span className="text-slate-400">{form.gstEnabled ? "GST" : form.taxLabel}</span>
+                    <span className="text-lg font-medium">{formatCurrency(taxAmount, form.currency)}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Total</span>
-                  <span className="text-2xl font-semibold">
-                    {formatCurrency(totalAmount, form.currency)}
-                  </span>
+                  <span className="text-2xl font-semibold">{formatCurrency(totalAmount, form.currency)}</span>
                 </div>
               </div>
 
@@ -1275,25 +1466,24 @@ export default function Home() {
                   <div>
                     <p className="text-slate-500">Issued</p>
                     <p className="mt-1 font-medium text-white">
-                      {formatDate(form.issueDate)}
+                      {formatDate(form.issueDate, form.timezone)}
                     </p>
                   </div>
                   <div>
                     <p className="text-slate-500">Due</p>
                     <p className="mt-1 font-medium text-white">
-                      {formatDate(form.dueDate)}
+                      {formatDate(form.dueDate, form.timezone)}
                     </p>
                   </div>
                 </div>
+                <p className="mt-4 text-sm text-slate-400">Timezone: {form.timezone}</p>
               </div>
             </div>
 
             <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
               <div className="flex items-end justify-between gap-4">
                 <div>
-                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">
-                    Brand profile
-                  </p>
+                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Brand profile</p>
                   <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
                     PDF branding
                   </h2>
@@ -1303,70 +1493,60 @@ export default function Home() {
 
               <div className="mt-6 grid gap-4">
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Company name
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Company name</span>
                   <input
                     value={brandProfile.companyName}
-                    onChange={(event) =>
-                      updateBrandField("companyName", event.target.value)
-                    }
+                    onChange={(event) => updateBrandField("companyName", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Company email
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Company email</span>
                   <input
                     type="email"
                     value={brandProfile.companyEmail}
-                    onChange={(event) =>
-                      updateBrandField("companyEmail", event.target.value)
-                    }
+                    onChange={(event) => updateBrandField("companyEmail", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Company address
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Sender address</span>
                   <textarea
                     rows={3}
                     value={brandProfile.companyAddress}
-                    onChange={(event) =>
-                      updateBrandField("companyAddress", event.target.value)
-                    }
+                    onChange={(event) => updateBrandField("companyAddress", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Payment instructions
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">GST number</span>
+                  <input
+                    value={brandProfile.gstNumber}
+                    onChange={(event) => updateBrandField("gstNumber", event.target.value)}
+                    placeholder="29ABCDE1234F1Z5"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Payment instructions</span>
                   <textarea
                     rows={3}
                     value={brandProfile.paymentInstructions}
-                    onChange={(event) =>
-                      updateBrandField("paymentInstructions", event.target.value)
-                    }
+                    onChange={(event) => updateBrandField("paymentInstructions", event.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
 
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Bank details
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Bank details</span>
                   <textarea
                     rows={3}
                     value={brandProfile.bankDetails}
-                    onChange={(event) =>
-                      updateBrandField("bankDetails", event.target.value)
-                    }
+                    onChange={(event) => updateBrandField("bankDetails", event.target.value)}
                     placeholder="Bank name, account number, IFSC / SWIFT, beneficiary"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
@@ -1374,28 +1554,20 @@ export default function Home() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">
-                      Signatory name
-                    </span>
+                    <span className="text-sm font-medium text-slate-700">Signatory name</span>
                     <input
                       value={brandProfile.signatoryName}
-                      onChange={(event) =>
-                        updateBrandField("signatoryName", event.target.value)
-                      }
+                      onChange={(event) => updateBrandField("signatoryName", event.target.value)}
                       placeholder="Chintan Tejani"
                       className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                     />
                   </label>
 
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">
-                      Footer note
-                    </span>
+                    <span className="text-sm font-medium text-slate-700">Footer note</span>
                     <input
                       value={brandProfile.footerNote}
-                      onChange={(event) =>
-                        updateBrandField("footerNote", event.target.value)
-                      }
+                      onChange={(event) => updateBrandField("footerNote", event.target.value)}
                       placeholder="Thank you for your business."
                       className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                     />
@@ -1410,7 +1582,7 @@ export default function Home() {
                         Upload a square PNG or JPG for your PDF header.
                       </p>
                     </div>
-                    <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100">
+                    <label className="inline-flex min-h-12 cursor-pointer items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100">
                       Upload logo
                       <input
                         type="file"
@@ -1432,7 +1604,7 @@ export default function Home() {
                       />
                       <button
                         onClick={() => updateBrandField("logoDataUrl", "")}
-                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                        className="min-h-12 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
                       >
                         Remove logo
                       </button>
@@ -1445,9 +1617,7 @@ export default function Home() {
             <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
               <div className="flex items-end justify-between gap-4">
                 <div>
-                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">
-                    Invoice history
-                  </p>
+                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Invoice history</p>
                   <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
                     Recent invoices
                   </h2>
@@ -1467,7 +1637,7 @@ export default function Home() {
                     <button
                       key={filter}
                       onClick={() => setHistoryFilter(filter)}
-                      className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
+                      className={`min-h-11 rounded-2xl px-4 py-2 text-sm font-medium transition ${
                         historyFilter === filter
                           ? "bg-slate-950 text-white"
                           : "border border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50"
@@ -1507,13 +1677,16 @@ export default function Home() {
                             {invoice.status}
                           </span>
                         </div>
-                        <p className="mt-2 text-base text-slate-700">
-                          {invoice.client_name}
-                        </p>
+                        <p className="mt-2 text-base text-slate-700">{invoice.client_name}</p>
                         <p className="mt-1 text-sm text-slate-500">
-                          Issued {formatDate(invoice.issue_date)}{" "}
-                          {invoice.due_date ? `• Due ${formatDate(invoice.due_date)}` : ""}
+                          Issued {formatDate(invoice.issue_date, invoice.timezone)} • Due{" "}
+                          {formatDate(invoice.due_date, invoice.timezone)}
                         </p>
+                        {invoice.last_reminder_sent_at ? (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Reminder sent {formatDateTime(invoice.last_reminder_sent_at, invoice.timezone)}
+                          </p>
+                        ) : null}
                       </div>
 
                       <div className="text-left sm:text-right">
@@ -1527,7 +1700,7 @@ export default function Home() {
                     <div className="mt-5 flex flex-wrap gap-3">
                       <button
                         onClick={() => startEditingInvoice(invoice)}
-                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
                       >
                         Edit
                       </button>
@@ -1539,7 +1712,7 @@ export default function Home() {
                           )
                         }
                         disabled={isUpdatingStatus === invoice.id}
-                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {isUpdatingStatus === invoice.id
                           ? "Updating..."
@@ -1548,10 +1721,21 @@ export default function Home() {
                             : "Mark paid"}
                       </button>
                       <button
-                        onClick={() =>
-                          downloadInvoicePdf(invoice, brandProfile, user.email)
-                        }
-                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                        onClick={() => sendReminderNow(invoice.id)}
+                        disabled={isSendingReminder === invoice.id}
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isSendingReminder === invoice.id ? "Sending..." : "Send reminder"}
+                      </button>
+                      <button
+                        onClick={() => shareViaWhatsApp(invoice)}
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      >
+                        Share WhatsApp
+                      </button>
+                      <button
+                        onClick={() => downloadInvoicePdf(invoice, brandProfile, user.email)}
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
                       >
                         Download PDF
                       </button>
@@ -1562,6 +1746,54 @@ export default function Home() {
             </div>
           </div>
         </section>
+      </div>
+
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200/80 bg-white/95 px-4 py-3 shadow-[0_-12px_40px_rgba(15,23,42,0.08)] backdrop-blur sm:hidden">
+        <div className="mx-auto flex max-w-7xl gap-3">
+          <button
+            onClick={saveInvoice}
+            disabled={isSaving}
+            className="min-h-14 flex-1 rounded-2xl bg-slate-950 px-5 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSaving ? "Saving..." : editingInvoiceId ? "Update" : "Save"}
+          </button>
+          <button
+            onClick={() => downloadInvoicePdf(previewInvoicePayload, brandProfile, user.email)}
+            className="min-h-14 flex-1 rounded-2xl border border-slate-300 bg-white px-5 py-4 text-base font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+          >
+            Preview PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="sticky bottom-4 z-10 mt-6 hidden sm:block">
+        <div className="mx-auto flex max-w-fit gap-3 rounded-[24px] border border-slate-200/80 bg-white/90 p-3 shadow-[0_18px_40px_rgba(15,23,42,0.08)] backdrop-blur">
+          <button
+            onClick={saveInvoice}
+            disabled={isSaving}
+            className="min-h-12 rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSaving
+              ? editingInvoiceId
+                ? "Updating invoice..."
+                : "Saving invoice..."
+              : editingInvoiceId
+                ? "Update invoice"
+                : "Save invoice"}
+          </button>
+          <button
+            onClick={() => downloadInvoicePdf(previewInvoicePayload, brandProfile, user.email)}
+            className="min-h-12 rounded-2xl border border-slate-300 bg-white px-6 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+          >
+            Preview PDF
+          </button>
+          <button
+            onClick={() => shareViaWhatsApp(previewInvoicePayload)}
+            className="min-h-12 rounded-2xl border border-slate-300 bg-white px-6 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+          >
+            WhatsApp draft
+          </button>
+        </div>
       </div>
     </main>
   );
