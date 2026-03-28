@@ -60,6 +60,17 @@ function formatCurrencyAmount(value) {
   }).format(Number(value || 0));
 }
 
+function formatPdfMoney(value, currency = "INR") {
+  const currencySymbols = {
+    INR: "INR",
+    USD: "USD",
+    EUR: "EUR",
+    GBP: "GBP",
+  };
+
+  return `${currencySymbols[currency] || currency} ${formatCurrencyAmount(value)}`;
+}
+
 function formatDate(value) {
   if (!value) return "Not set";
 
@@ -115,6 +126,8 @@ function downloadInvoicePdf(invoice, accountEmail) {
   const quantityX = 360;
   const rateX = 450;
   const amountX = 551;
+  const summaryBoxX = 334;
+  const summaryBoxWidth = 217;
 
   pdf.setFillColor(22, 33, 62);
   pdf.rect(0, 0, pageWidth, 120, "F");
@@ -144,8 +157,10 @@ function downloadInvoicePdf(invoice, accountEmail) {
   pdf.text(`Status: ${normalized.status}`, 44, y);
 
   y += 40;
-  pdf.setFillColor(244, 246, 251);
-  pdf.roundedRect(leftX, y - 18, rightX - leftX, 30, 10, 10, "F");
+  pdf.setFillColor(247, 248, 252);
+  pdf.roundedRect(leftX, y - 18, rightX - leftX, 30, 8, 8, "F");
+  pdf.setDrawColor(226, 232, 240);
+  pdf.roundedRect(leftX, y - 18, rightX - leftX, 30, 8, 8);
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(10);
   pdf.text("Description", leftX, y);
@@ -168,10 +183,10 @@ function downloadInvoicePdf(invoice, accountEmail) {
     pdf.setFontSize(11);
     pdf.text(descriptionLines, leftX, y);
     pdf.text(String(quantity), quantityX, y);
-    pdf.text(formatCurrencyAmount(rate), rateX, y, {
+    pdf.text(formatPdfMoney(rate, normalized.currency), rateX, y, {
       align: "right",
     });
-    pdf.text(formatCurrencyAmount(lineTotal), amountX, y, {
+    pdf.text(formatPdfMoney(lineTotal, normalized.currency), amountX, y, {
       align: "right",
     });
     y += rowHeight + 8;
@@ -180,30 +195,33 @@ function downloadInvoicePdf(invoice, accountEmail) {
     y += 10;
   });
 
-  y += 10;
-  pdf.setDrawColor(218, 223, 234);
-  pdf.line(leftX, y, rightX, y);
-  y += 26;
+  y += 14;
+  pdf.setFillColor(249, 250, 251);
+  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, 86, 12, 12, "F");
+  pdf.setDrawColor(226, 232, 240);
+  pdf.roundedRect(summaryBoxX, y - 8, summaryBoxWidth, 86, 12, 12);
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(11);
-  pdf.text("Subtotal", 390, y);
-  pdf.text(formatCurrency(normalized.subtotal, normalized.currency), amountX, y, {
+  pdf.text("Subtotal", 354, y + 16);
+  pdf.text(formatPdfMoney(normalized.subtotal, normalized.currency), amountX, y + 16, {
     align: "right",
   });
-  y += 20;
-  pdf.text("Tax", 390, y);
-  pdf.text(formatCurrency(normalized.tax_amount, normalized.currency), amountX, y, {
+  pdf.setFont("helvetica", "normal");
+  pdf.text("Tax", 354, y + 40);
+  pdf.text(formatPdfMoney(normalized.tax_amount, normalized.currency), amountX, y + 40, {
     align: "right",
   });
-  y += 20;
+  pdf.setDrawColor(226, 232, 240);
+  pdf.line(summaryBoxX + 16, y + 51, amountX - 16, y + 51);
   pdf.setFontSize(14);
-  pdf.text("Total", 390, y);
-  pdf.text(formatCurrency(normalized.total_amount, normalized.currency), amountX, y, {
+  pdf.setFont("helvetica", "bold");
+  pdf.text("Total", 354, y + 74);
+  pdf.text(formatPdfMoney(normalized.total_amount, normalized.currency), amountX, y + 74, {
     align: "right",
   });
+  y += 106;
 
   if (normalized.notes) {
-    y += 42;
     pdf.setFontSize(12);
     pdf.text("Notes", 44, y);
     y += 18;
