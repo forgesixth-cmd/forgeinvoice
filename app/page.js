@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 export default function Home() {
@@ -10,21 +10,45 @@ export default function Home() {
   const [invoices, setInvoices] = useState([]);
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [dataError, setDataError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
   const configError = !supabase
     ? "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel project settings."
     : "";
 
-  async function fetchInvoices(userId) {
+  const getFriendlySupabaseError = (error, action) => {
+    const message = error?.message || "";
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes('relation "invoices" does not exist')) {
+      return 'The "invoices" table does not exist in Supabase yet.';
+    }
+
+    if (normalized.includes("row-level security")) {
+      return `Supabase blocked the ${action}. Check your Row Level Security policies for the invoices table.`;
+    }
+
+    return message || `Unable to ${action}. Please try again.`;
+  };
+
+  const fetchInvoices = useCallback(async (userId) => {
     if (!supabase) return;
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("invoices")
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    setInvoices(data);
-  }
+    if (error) {
+      setDataError(getFriendlySupabaseError(error, "load invoices"));
+      setInvoices([]);
+      return;
+    }
+
+    setDataError("");
+    setInvoices(data || []);
+  }, []);
 
   useEffect(() => {
     if (!supabase) return;
@@ -38,7 +62,7 @@ export default function Home() {
     };
 
     getUser();
-  }, []);
+  }, [fetchInvoices]);
 
   const login = async () => {
     if (!supabase) return;
@@ -84,30 +108,45 @@ export default function Home() {
         if (session?.user) {
           setUser(session.user);
           fetchInvoices(session.user.id);
+        } else {
+          setUser(null);
+          setInvoices([]);
         }
       }
     );
 
     return () => listener.subscription.unsubscribe();
-  }, []);
+  }, [fetchInvoices]);
 
   const logout = async () => {
     if (!supabase) return;
 
     await supabase.auth.signOut();
     setUser(null);
+    setInvoices([]);
+    setDataError("");
   };
 
   const saveInvoice = async () => {
     if (!supabase || !user || !client || !amount) return;
 
-    await supabase.from("invoices").insert([
+    setDataError("");
+    setIsSaving(true);
+
+    const { error } = await supabase.from("invoices").insert([
       {
         user_id: user.id,
-        client,
-        amount,
+        client: client.trim(),
+        amount: Number(amount),
       },
     ]);
+
+    setIsSaving(false);
+
+    if (error) {
+      setDataError(getFriendlySupabaseError(error, "save invoice"));
+      return;
+    }
 
     fetchInvoices(user.id);
     setClient("");
@@ -168,10 +207,15 @@ export default function Home() {
 
       <button
         onClick={saveInvoice}
-        className="w-full bg-black text-white p-2 mb-6"
+        disabled={isSaving}
+        className="w-full bg-black text-white p-2 mb-6 disabled:opacity-60"
       >
-        Save Invoice
+        {isSaving ? "Saving..." : "Save Invoice"}
       </button>
+
+      {dataError ? (
+        <p className="text-sm text-red-600 mb-4">{dataError}</p>
+      ) : null}
 
       <h2 className="font-semibold mb-2">Your Invoices</h2>
 
