@@ -54,6 +54,10 @@ function createBrandProfile(accountEmail = "") {
     companyEmail: accountEmail,
     companyAddress: "",
     logoDataUrl: "",
+    paymentInstructions: "Please make payment within the due date mentioned on this invoice.",
+    bankDetails: "",
+    signatoryName: "",
+    footerNote: "Thank you for your business.",
   };
 }
 
@@ -198,6 +202,7 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   const amountX = 551;
   const summaryBoxX = 334;
   const summaryBoxWidth = 217;
+  const pageBottom = 770;
 
   pdf.setFillColor(22, 33, 62);
   pdf.rect(0, 0, pageWidth, 120, "F");
@@ -223,18 +228,47 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   pdf.setFontSize(13);
   pdf.setFont("helvetica", "bold");
   pdf.text(`Invoice ${normalized.invoice_number}`, 44, y);
-  y += 24;
+  y += 28;
+  pdf.setFillColor(248, 250, 252);
+  pdf.roundedRect(leftX, y - 18, 240, 96, 12, 12, "F");
+  pdf.roundedRect(312, y - 18, 239, 96, 12, 12, "F");
+  pdf.setDrawColor(226, 232, 240);
+  pdf.roundedRect(leftX, y - 18, 240, 96, 12, 12);
+  pdf.roundedRect(312, y - 18, 239, 96, 12, 12);
+  pdf.setFontSize(10);
+  pdf.setFont("helvetica", "bold");
+  pdf.text("From", 60, y);
+  pdf.text("Bill To", 328, y);
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(11);
-  pdf.text(`Client: ${normalized.client_name}`, 44, y);
-  y += 18;
-  pdf.text(`Issue date: ${formatDate(normalized.issue_date)}`, 44, y);
-  y += 18;
-  pdf.text(`Due date: ${formatDate(normalized.due_date)}`, 44, y);
-  y += 18;
-  pdf.text(`Status: ${normalized.status}`, 44, y);
+  pdf.text(brand.companyName || "ForgeInvoice", 60, y + 22);
+  if (brand.companyAddress) {
+    pdf.text(brand.companyAddress, 60, y + 40, { maxWidth: 200 });
+  }
+  pdf.text(brand.companyEmail || accountEmail || "your-team@example.com", 60, y + 72);
+  pdf.text(normalized.client_name, 328, y + 22);
+  if (normalized.client_address) {
+    pdf.text(normalized.client_address, 328, y + 40, { maxWidth: 190 });
+  }
+  if (normalized.client_email) {
+    pdf.text(normalized.client_email, 328, y + 72);
+  }
 
-  y += 40;
+  y += 116;
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(10);
+  pdf.text("Issue Date", 44, y);
+  pdf.text("Due Date", 170, y);
+  pdf.text("Status", 296, y);
+  pdf.text("Currency", 408, y);
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(11);
+  pdf.text(formatDate(normalized.issue_date), 44, y + 20);
+  pdf.text(formatDate(normalized.due_date), 170, y + 20);
+  pdf.text(normalized.status.toUpperCase(), 296, y + 20);
+  pdf.text(normalized.currency, 408, y + 20);
+
+  y += 54;
   pdf.setFillColor(247, 248, 252);
   pdf.roundedRect(leftX, y - 18, rightX - leftX, 30, 8, 8, "F");
   pdf.setDrawColor(226, 232, 240);
@@ -299,13 +333,68 @@ async function downloadInvoicePdf(invoice, brandProfile, accountEmail) {
   });
   y += 106;
 
+  const notesHeight = normalized.notes ? 72 : 0;
+  const paymentHeight =
+    brand.paymentInstructions || brand.bankDetails ? 96 : 0;
+  const footerHeight = brand.signatoryName || brand.footerNote ? 70 : 0;
+  const reservedHeight = notesHeight + paymentHeight + footerHeight + 40;
+  if (y + reservedHeight > pageBottom) {
+    pdf.addPage();
+    y = 56;
+  }
+
   if (normalized.notes) {
+    pdf.setFillColor(248, 250, 252);
+    pdf.roundedRect(44, y - 16, 507, 62, 12, 12, "F");
+    pdf.setDrawColor(226, 232, 240);
+    pdf.roundedRect(44, y - 16, 507, 62, 12, 12);
     pdf.setFontSize(12);
-    pdf.text("Notes", 44, y);
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Notes", 60, y);
     y += 18;
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(11);
-    pdf.text(normalized.notes, 44, y, { maxWidth: 480 });
+    pdf.text(normalized.notes, 60, y, { maxWidth: 470 });
+    y += 54;
+  }
+
+  if (brand.paymentInstructions || brand.bankDetails) {
+    pdf.setFillColor(248, 250, 252);
+    pdf.roundedRect(44, y - 16, 507, 86, 12, 12, "F");
+    pdf.setDrawColor(226, 232, 240);
+    pdf.roundedRect(44, y - 16, 507, 86, 12, 12);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(12);
+    pdf.text("Payment Instructions", 60, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(11);
+    pdf.text(
+      brand.paymentInstructions || "Please complete payment by the due date.",
+      60,
+      y + 20,
+      { maxWidth: 220 }
+    );
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Bank Details", 320, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(brand.bankDetails || "Add your bank details in the workspace.", 320, y + 20, {
+      maxWidth: 200,
+    });
+    y += 96;
+  }
+
+  if (brand.signatoryName || brand.footerNote) {
+    pdf.setDrawColor(203, 213, 225);
+    pdf.line(60, y + 30, 220, y + 30);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    pdf.text(brand.signatoryName || "Authorized Signatory", 60, y + 46);
+    pdf.text(
+      brand.footerNote || "Thank you for your business.",
+      551,
+      y + 46,
+      { align: "right" }
+    );
   }
 
   pdf.save(`${normalized.invoice_number}.pdf`);
@@ -1253,6 +1342,65 @@ export default function Home() {
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Payment instructions
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={brandProfile.paymentInstructions}
+                    onChange={(event) =>
+                      updateBrandField("paymentInstructions", event.target.value)
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Bank details
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={brandProfile.bankDetails}
+                    onChange={(event) =>
+                      updateBrandField("bankDetails", event.target.value)
+                    }
+                    placeholder="Bank name, account number, IFSC / SWIFT, beneficiary"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700">
+                      Signatory name
+                    </span>
+                    <input
+                      value={brandProfile.signatoryName}
+                      onChange={(event) =>
+                        updateBrandField("signatoryName", event.target.value)
+                      }
+                      placeholder="Chintan Tejani"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                    />
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700">
+                      Footer note
+                    </span>
+                    <input
+                      value={brandProfile.footerNote}
+                      onChange={(event) =>
+                        updateBrandField("footerNote", event.target.value)
+                      }
+                      placeholder="Thank you for your business."
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                    />
+                  </label>
+                </div>
 
                 <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
