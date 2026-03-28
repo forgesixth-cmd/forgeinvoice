@@ -8,53 +8,68 @@ export default function Home() {
   const [client, setClient] = useState("");
   const [amount, setAmount] = useState("");
   const [invoices, setInvoices] = useState([]);
+  const configError = !supabase
+    ? "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel project settings."
+    : "";
 
-useEffect(() => {
-  const getUser = async () => {
-    const { data } = await supabase.auth.getSession();
-    if (data.session) {
-      setUser(data.session.user);
-      fetchInvoices(data.session.user.id);
-    }
-  };
+  async function fetchInvoices(userId) {
+    if (!supabase) return;
 
-  getUser();
-}, []);
+    const { data } = await supabase
+      .from("invoices")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
 
-  const checkUser = async () => {
-    const { data } = await supabase.auth.getUser();
-    if (data.user) {
-      setUser(data.user);
-      fetchInvoices(data.user.id);
-    }
-  };
+    setInvoices(data);
+  }
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    const getUser = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        setUser(data.session.user);
+        fetchInvoices(data.session.user.id);
+      }
+    };
+
+    getUser();
+  }, []);
 
   const login = async () => {
+    if (!supabase) return;
+
     await supabase.auth.signInWithOAuth({
       provider: "google",
     });
   };
 
   useEffect(() => {
-  const { data: listener } = supabase.auth.onAuthStateChange(
-    (_event, session) => {
-      if (session?.user) {
-        setUser(session.user);
-        fetchInvoices(session.user.id);
-      }
-    }
-  );
+    if (!supabase) return;
 
-  return () => listener.subscription.unsubscribe();
-}, []);
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+          fetchInvoices(session.user.id);
+        }
+      }
+    );
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
   const logout = async () => {
+    if (!supabase) return;
+
     await supabase.auth.signOut();
     setUser(null);
   };
 
   const saveInvoice = async () => {
-    if (!client || !amount) return;
+    if (!supabase || !user || !client || !amount) return;
 
     await supabase.from("invoices").insert([
       {
@@ -69,15 +84,16 @@ useEffect(() => {
     setAmount("");
   };
 
-  const fetchInvoices = async (userId) => {
-    const { data } = await supabase
-      .from("invoices")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
-
-    setInvoices(data);
-  };
+  if (configError) {
+    return (
+      <div className="h-screen flex items-center justify-center p-6 text-center">
+        <div>
+          <h1 className="text-xl font-bold mb-3">ForgeInvoice</h1>
+          <p className="text-red-600">{configError}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -94,7 +110,6 @@ useEffect(() => {
 
   return (
     <div className="p-6 max-w-xl mx-auto">
-
       <div className="flex justify-between mb-4">
         <h1 className="text-xl font-bold">ForgeInvoice</h1>
         <button onClick={logout}>Logout</button>
@@ -129,7 +144,6 @@ useEffect(() => {
           <p>₹{inv.amount}</p>
         </div>
       ))}
-
     </div>
   );
 }
