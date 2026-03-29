@@ -79,6 +79,75 @@ function createBrandProfile(accountEmail = "") {
   };
 }
 
+function safeString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function normalizeFormData(form) {
+  const base = createInitialForm();
+  const incoming = form || {};
+  const items =
+    Array.isArray(incoming.items) && incoming.items.length > 0
+      ? incoming.items.map((item) => ({
+          description: safeString(item?.description),
+          quantity: safeString(item?.quantity, "1"),
+          rate: safeString(item?.rate, "0"),
+        }))
+      : base.items;
+
+  return {
+    ...base,
+    ...incoming,
+    invoiceNumber: safeString(incoming.invoiceNumber, base.invoiceNumber),
+    clientName: safeString(incoming.clientName),
+    clientEmail: safeString(incoming.clientEmail),
+    clientAddress: safeString(incoming.clientAddress),
+    issueDate: safeString(incoming.issueDate, base.issueDate),
+    dueDate: safeString(incoming.dueDate, base.dueDate),
+    status: safeString(incoming.status, base.status),
+    currency: safeString(incoming.currency, base.currency),
+    timezone: safeString(incoming.timezone, base.timezone),
+    taxEnabled:
+      typeof incoming.taxEnabled === "boolean"
+        ? incoming.taxEnabled
+        : base.taxEnabled,
+    taxLabel: safeString(incoming.taxLabel, base.taxLabel),
+    taxRate: safeString(incoming.taxRate, base.taxRate),
+    gstEnabled:
+      typeof incoming.gstEnabled === "boolean"
+        ? incoming.gstEnabled
+        : base.gstEnabled,
+    reminderEnabled:
+      typeof incoming.reminderEnabled === "boolean"
+        ? incoming.reminderEnabled
+        : base.reminderEnabled,
+    notes: safeString(incoming.notes),
+    items,
+  };
+}
+
+function normalizeBrandProfileData(profile, accountEmail = "") {
+  const base = createBrandProfile(accountEmail);
+  const incoming = profile || {};
+
+  return {
+    ...base,
+    ...incoming,
+    companyName: safeString(incoming.companyName, base.companyName),
+    companyEmail: safeString(incoming.companyEmail, base.companyEmail),
+    companyAddress: safeString(incoming.companyAddress),
+    logoDataUrl: safeString(incoming.logoDataUrl),
+    paymentInstructions: safeString(
+      incoming.paymentInstructions,
+      base.paymentInstructions
+    ),
+    bankDetails: safeString(incoming.bankDetails),
+    signatoryName: safeString(incoming.signatoryName),
+    footerNote: safeString(incoming.footerNote, base.footerNote),
+    gstNumber: safeString(incoming.gstNumber),
+  };
+}
+
 function getDraftStorageKey(userId) {
   return `forgeinvoice:draft:${userId}`;
 }
@@ -189,7 +258,7 @@ function normalizeInvoice(inv) {
 function invoiceToForm(invoice) {
   const normalized = normalizeInvoice(invoice);
 
-  return {
+  return normalizeFormData({
     invoiceNumber: normalized.invoice_number,
     clientName: normalized.client_name,
     clientEmail: normalized.client_email,
@@ -211,7 +280,7 @@ function invoiceToForm(invoice) {
         quantity: String(item.quantity ?? 1),
         rate: String(item.rate ?? 0),
       })) || [createEmptyItem()],
-  };
+  });
 }
 
 function readFileAsDataUrl(file) {
@@ -598,7 +667,7 @@ export default function Home() {
       try {
         const parsed = JSON.parse(savedDraft);
         startTransition(() => {
-          if (parsed.form) setForm(parsed.form);
+          if (parsed.form) setForm(normalizeFormData(parsed.form));
           if (parsed.editingInvoiceId) setEditingInvoiceId(parsed.editingInvoiceId);
           if (parsed.lastDraftSavedAt) setLastDraftSavedAt(parsed.lastDraftSavedAt);
         });
@@ -612,17 +681,17 @@ export default function Home() {
       try {
         const parsedBrand = JSON.parse(savedBrand);
         startTransition(() => {
-          setBrandProfile(parsedBrand);
+          setBrandProfile(normalizeBrandProfileData(parsedBrand, user.email));
         });
       } catch {
         window.localStorage.removeItem(getBrandStorageKey(user.id));
         startTransition(() => {
-          setBrandProfile(createBrandProfile(user.email));
+          setBrandProfile(normalizeBrandProfileData({}, user.email));
         });
       }
     } else {
       startTransition(() => {
-        setBrandProfile(createBrandProfile(user.email));
+        setBrandProfile(normalizeBrandProfileData({}, user.email));
       });
     }
   }, [user]);
@@ -783,11 +852,14 @@ export default function Home() {
   };
 
   const validateForm = () => {
-    if (!form.clientName.trim()) {
+    const clientName = safeString(form.clientName).trim();
+    const gstNumber = safeString(brandProfile.gstNumber).trim();
+
+    if (!clientName) {
       return "Add a client name before saving.";
     }
 
-    if (!form.items.some((item) => item.description.trim())) {
+    if (!form.items.some((item) => safeString(item.description).trim())) {
       return "Add at least one line item description.";
     }
 
@@ -799,7 +871,7 @@ export default function Home() {
       return "Each line item needs a quantity above 0 and a valid rate.";
     }
 
-    if (form.gstEnabled && !brandProfile.gstNumber.trim()) {
+    if (form.gstEnabled && !gstNumber) {
       return "Add your GST number in the brand profile before saving a GST invoice.";
     }
 
@@ -816,27 +888,34 @@ export default function Home() {
     }
 
     const cleanedItems = form.items
-      .filter((item) => item.description.trim())
+      .filter((item) => safeString(item.description).trim())
       .map((item) => ({
-        description: item.description.trim(),
+        description: safeString(item.description).trim(),
         quantity: Number(item.quantity || 0),
         rate: Number(item.rate || 0),
       }));
 
+    const invoiceNumber = safeString(form.invoiceNumber, createInvoiceNumber()).trim();
+    const clientName = safeString(form.clientName).trim();
+    const clientEmail = safeString(form.clientEmail).trim();
+    const clientAddress = safeString(form.clientAddress).trim();
+    const taxLabel = safeString(form.taxLabel, "Tax").trim() || "Tax";
+    const notes = safeString(form.notes).trim();
+
     const payload = {
       user_id: user.id,
-      invoice_number: form.invoiceNumber.trim(),
-      client: form.clientName.trim(),
-      client_name: form.clientName.trim(),
-      client_email: form.clientEmail.trim(),
-      client_address: form.clientAddress.trim(),
+      invoice_number: invoiceNumber,
+      client: clientName,
+      client_name: clientName,
+      client_email: clientEmail,
+      client_address: clientAddress,
       issue_date: form.issueDate,
       due_date: form.dueDate,
       status: form.status,
       currency: form.currency,
       timezone: form.timezone,
       tax_enabled: form.taxEnabled,
-      tax_label: form.gstEnabled ? "GST" : form.taxLabel.trim() || "Tax",
+      tax_label: form.gstEnabled ? "GST" : taxLabel,
       tax_rate: form.taxEnabled ? taxRateNumber : 0,
       gst_enabled: form.gstEnabled,
       reminder_enabled: form.reminderEnabled,
@@ -844,7 +923,7 @@ export default function Home() {
       tax_amount: form.taxEnabled ? taxAmount : 0,
       total_amount,
       amount: totalAmount,
-      notes: form.notes.trim(),
+      notes,
       items: cleanedItems,
     };
 
