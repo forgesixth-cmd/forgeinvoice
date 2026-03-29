@@ -2103,23 +2103,24 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Invoice history</p>
-                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                    Recent invoices
-                  </h2>
-                </div>
-                <p className="text-sm text-slate-500">{filteredInvoices.length} shown</p>
-              </div>
+          </div>
+        </section>
 
-              <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <section className="mt-6">
+          <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Invoice history</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                  Recent invoices
+                </h2>
+              </div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
                 <input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   placeholder="Search by client name"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white lg:max-w-xs"
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white lg:min-w-72"
                 />
                 <div className="flex flex-wrap gap-2">
                   {INVOICE_FILTERS.map((filter) => (
@@ -2139,115 +2140,115 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+            </div>
 
-              <div className="mt-6 space-y-4">
-                {filteredInvoices.length === 0 ? (
-                  <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center text-slate-500">
-                    No invoices match this view yet. Save or search for another invoice.
-                  </div>
-                ) : null}
+            <div className="mt-6 grid gap-4 xl:grid-cols-2">
+              {filteredInvoices.length === 0 ? (
+                <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center text-slate-500 xl:col-span-2">
+                  No invoices match this view yet. Save or search for another invoice.
+                </div>
+              ) : null}
 
-                {filteredInvoices.map((invoice) => (
-                  <article
-                    key={invoice.id}
-                    className="rounded-3xl border border-slate-200 bg-slate-50/80 p-5"
-                  >
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <h3 className="text-lg font-semibold text-slate-950">
-                            {invoice.invoice_number}
-                          </h3>
-                          <span
-                            className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
-                              STATUS_STYLES[invoice.status] || STATUS_STYLES.draft
-                            }`}
-                          >
-                            {invoice.status}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-base text-slate-700">{invoice.client_name}</p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          Issued {formatDate(invoice.issue_date, invoice.timezone)} • Due{" "}
-                          {formatDate(invoice.due_date, invoice.timezone)}
-                        </p>
-                        {invoice.last_reminder_sent_at ? (
-                          <p className="mt-1 text-xs text-slate-500">
-                            Reminder sent {formatDateTime(invoice.last_reminder_sent_at, invoice.timezone)}
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div className="text-left sm:text-right">
-                        <p className="text-sm text-slate-500">Invoice total</p>
-                        <p className="mt-2 text-2xl font-semibold text-slate-950">
-                          {formatCurrency(invoice.total_amount, invoice.currency)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 flex flex-wrap gap-3">
-                      {invoice.payment_link ? (
-                        <a
-                          href={invoice.payment_link}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+              {filteredInvoices.map((invoice) => (
+                <article
+                  key={invoice.id}
+                  className="rounded-3xl border border-slate-200 bg-slate-50/80 p-5"
+                >
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-lg font-semibold text-slate-950">
+                          {invoice.invoice_number}
+                        </h3>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                            STATUS_STYLES[invoice.status] || STATUS_STYLES.draft
+                          }`}
                         >
-                          Pay now
-                        </a>
+                          {invoice.status}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-base text-slate-700">{invoice.client_name}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Issued {formatDate(invoice.issue_date, invoice.timezone)} • Due{" "}
+                        {formatDate(invoice.due_date, invoice.timezone)}
+                      </p>
+                      {invoice.last_reminder_sent_at ? (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Reminder sent {formatDateTime(invoice.last_reminder_sent_at, invoice.timezone)}
+                        </p>
                       ) : null}
-                      <button
-                        onClick={() => startEditingInvoice(invoice)}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => openEmailComposer(invoice)}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
-                      >
-                        Email invoice
-                      </button>
-                      <button
-                        onClick={() =>
-                          updateInvoiceStatus(
-                            invoice.id,
-                            invoice.status === "paid" ? "pending" : "paid"
-                          )
-                        }
-                        disabled={isUpdatingStatus === invoice.id}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isUpdatingStatus === invoice.id
-                          ? "Updating..."
-                          : invoice.status === "paid"
-                            ? "Mark pending"
-                            : "Mark paid"}
-                      </button>
-                      <button
-                        onClick={() => sendReminderNow(invoice.id)}
-                        disabled={isSendingReminder === invoice.id}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isSendingReminder === invoice.id ? "Sending..." : "Send reminder"}
-                      </button>
-                      <button
-                        onClick={() => shareViaWhatsApp(invoice)}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
-                      >
-                        Share WhatsApp
-                      </button>
-                      <button
-                        onClick={() => downloadInvoicePdf(invoice, brandProfile, user.email)}
-                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
-                      >
-                        Download PDF
-                      </button>
                     </div>
-                  </article>
-                ))}
-              </div>
+
+                    <div className="text-left sm:text-right">
+                      <p className="text-sm text-slate-500">Invoice total</p>
+                      <p className="mt-2 text-2xl font-semibold text-slate-950">
+                        {formatCurrency(invoice.total_amount, invoice.currency)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    {invoice.payment_link ? (
+                      <a
+                        href={invoice.payment_link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      >
+                        Pay now
+                      </a>
+                    ) : null}
+                    <button
+                      onClick={() => startEditingInvoice(invoice)}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => openEmailComposer(invoice)}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                    >
+                      Email invoice
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateInvoiceStatus(
+                          invoice.id,
+                          invoice.status === "paid" ? "pending" : "paid"
+                        )
+                      }
+                      disabled={isUpdatingStatus === invoice.id}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isUpdatingStatus === invoice.id
+                        ? "Updating..."
+                        : invoice.status === "paid"
+                          ? "Mark pending"
+                          : "Mark paid"}
+                    </button>
+                    <button
+                      onClick={() => sendReminderNow(invoice.id)}
+                      disabled={isSendingReminder === invoice.id}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSendingReminder === invoice.id ? "Sending..." : "Send reminder"}
+                    </button>
+                    <button
+                      onClick={() => shareViaWhatsApp(invoice)}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                    >
+                      Share WhatsApp
+                    </button>
+                    <button
+                      onClick={() => downloadInvoicePdf(invoice, brandProfile, user.email)}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                    >
+                      Download PDF
+                    </button>
+                  </div>
+                </article>
+              ))}
             </div>
           </div>
         </section>
