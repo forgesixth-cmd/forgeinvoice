@@ -744,8 +744,17 @@ export default function Home() {
     setForm(createInitialForm());
     setEditingInvoiceId(null);
     setDataError("");
-    setSaveSuccess("");
     setReminderMessage("");
+
+    if (user) {
+      window.localStorage.removeItem(getDraftStorageKey(user.id));
+    }
+  };
+
+  const clearSavedDraftState = () => {
+    setForm(createInitialForm());
+    setEditingInvoiceId(null);
+    setLastDraftSavedAt("");
 
     if (user) {
       window.localStorage.removeItem(getDraftStorageKey(user.id));
@@ -865,15 +874,9 @@ export default function Home() {
         ? `Invoice ${payload.invoice_number} updated successfully.`
         : `Invoice ${payload.invoice_number} saved successfully.`
     );
-
-    if (user) {
-      window.localStorage.removeItem(getDraftStorageKey(user.id));
-    }
-
-    setForm(createInitialForm());
-    setEditingInvoiceId(null);
-    setLastDraftSavedAt("");
-    fetchInvoices(user.id);
+    clearSavedDraftState();
+    await fetchInvoices(user.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const updateInvoiceStatus = async (invoiceId, nextStatus) => {
@@ -1143,6 +1146,24 @@ export default function Home() {
                   </p>
                 </div>
               </div>
+
+              {dataError ? (
+                <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {dataError}
+                </p>
+              ) : null}
+
+              {saveSuccess ? (
+                <p className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  {saveSuccess}
+                </p>
+              ) : null}
+
+              {reminderMessage ? (
+                <p className="mt-6 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
+                  {reminderMessage}
+                </p>
+              ) : null}
 
               <div className="mt-8 grid gap-4 md:grid-cols-2">
                 <label className="space-y-2">
@@ -1417,23 +1438,27 @@ export default function Home() {
                 />
               </label>
 
-              {dataError ? (
-                <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {dataError}
-                </p>
-              ) : null}
-
-              {saveSuccess ? (
-                <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                  {saveSuccess}
-                </p>
-              ) : null}
-
-              {reminderMessage ? (
-                <p className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
-                  {reminderMessage}
-                </p>
-              ) : null}
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <button
+                  onClick={saveInvoice}
+                  disabled={isSaving}
+                  className="min-h-14 rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSaving
+                    ? editingInvoiceId
+                      ? "Updating invoice..."
+                      : "Saving invoice..."
+                    : editingInvoiceId
+                      ? "Update invoice"
+                      : "Save invoice"}
+                </button>
+                <button
+                  onClick={() => downloadInvoicePdf(previewInvoicePayload, brandProfile, user.email)}
+                  className="min-h-14 rounded-2xl border border-slate-300 bg-white px-6 py-4 text-base font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                >
+                  Preview PDF
+                </button>
+              </div>
             </div>
           </div>
 
