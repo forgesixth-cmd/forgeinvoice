@@ -921,7 +921,7 @@ export default function Home() {
       reminder_enabled: form.reminderEnabled,
       subtotal,
       tax_amount: form.taxEnabled ? taxAmount : 0,
-      total_amount,
+      total_amount: totalAmount,
       amount: totalAmount,
       notes,
       items: cleanedItems,
