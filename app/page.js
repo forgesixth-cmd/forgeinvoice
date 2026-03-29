@@ -49,8 +49,10 @@ function createInitialForm() {
     clientName: "",
     clientEmail: "",
     clientAddress: "",
+    clientPhone: "",
     issueDate: getTodayDateString(),
     dueDate: getFutureDateString(14),
+    nextIssueDate: getFutureDateString(30),
     status: "draft",
     currency: "INR",
     timezone: "Asia/Kolkata",
@@ -59,6 +61,9 @@ function createInitialForm() {
     taxRate: "18",
     gstEnabled: false,
     reminderEnabled: true,
+    recurringEnabled: false,
+    recurringFrequency: "monthly",
+    paymentLink: "",
     notes: "",
     items: [createEmptyItem()],
   };
@@ -102,8 +107,10 @@ function normalizeFormData(form) {
     clientName: safeString(incoming.clientName),
     clientEmail: safeString(incoming.clientEmail),
     clientAddress: safeString(incoming.clientAddress),
+    clientPhone: safeString(incoming.clientPhone),
     issueDate: safeString(incoming.issueDate, base.issueDate),
     dueDate: safeString(incoming.dueDate, base.dueDate),
+    nextIssueDate: safeString(incoming.nextIssueDate, base.nextIssueDate),
     status: safeString(incoming.status, base.status),
     currency: safeString(incoming.currency, base.currency),
     timezone: safeString(incoming.timezone, base.timezone),
@@ -121,6 +128,15 @@ function normalizeFormData(form) {
       typeof incoming.reminderEnabled === "boolean"
         ? incoming.reminderEnabled
         : base.reminderEnabled,
+    recurringEnabled:
+      typeof incoming.recurringEnabled === "boolean"
+        ? incoming.recurringEnabled
+        : base.recurringEnabled,
+    recurringFrequency: safeString(
+      incoming.recurringFrequency,
+      base.recurringFrequency
+    ),
+    paymentLink: safeString(incoming.paymentLink),
     notes: safeString(incoming.notes),
     items,
   };
@@ -215,6 +231,50 @@ function summarizeTotalsByCurrency(invoices) {
     .join(" • ");
 }
 
+function buildMonthlyRevenueData(invoices) {
+  const now = new Date();
+  const months = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    return {
+      key,
+      label: date.toLocaleString("en-IN", { month: "short" }),
+      paid: 0,
+      pending: 0,
+    };
+  });
+
+  const byKey = Object.fromEntries(months.map((month) => [month.key, month]));
+
+  invoices.forEach((invoice) => {
+    const sourceDate = invoice.issue_date || invoice.created_at;
+    if (!sourceDate) return;
+
+    const date = new Date(sourceDate);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    if (!byKey[key]) return;
+
+    const amount = Number(invoice.total_amount ?? invoice.amount ?? 0);
+    if (invoice.status === "paid") {
+      byKey[key].paid += amount;
+    } else {
+      byKey[key].pending += amount;
+    }
+  });
+
+  return months;
+}
+
+function getClientRecord(invoice) {
+  const normalized = normalizeInvoice(invoice);
+  return {
+    name: normalized.client_name,
+    email: normalized.client_email,
+    address: normalized.client_address,
+    phone: normalized.client_phone,
+  };
+}
+
 function normalizeInvoice(inv) {
   const items =
     Array.isArray(inv.items) && inv.items.length > 0
@@ -233,8 +293,10 @@ function normalizeInvoice(inv) {
     client_name: inv.client_name || inv.client || "Untitled client",
     client_email: inv.client_email || "",
     client_address: inv.client_address || "",
+    client_phone: inv.client_phone || "",
     issue_date: inv.issue_date || inv.created_at?.split("T")[0] || "",
     due_date: inv.due_date || "",
+    next_issue_date: inv.next_issue_date || "",
     status: inv.status === "sent" ? "pending" : inv.status || "draft",
     currency: inv.currency || "INR",
     timezone: inv.timezone || "Asia/Kolkata",
@@ -246,12 +308,16 @@ function normalizeInvoice(inv) {
       typeof inv.gst_enabled === "boolean" ? inv.gst_enabled : false,
     reminder_enabled:
       typeof inv.reminder_enabled === "boolean" ? inv.reminder_enabled : true,
+    recurring_enabled:
+      typeof inv.recurring_enabled === "boolean" ? inv.recurring_enabled : false,
+    recurring_frequency: inv.recurring_frequency || "monthly",
     subtotal: Number(inv.subtotal ?? inv.amount ?? inv.total_amount ?? 0),
     tax_amount: Number(inv.tax_amount ?? 0),
     total_amount: Number(inv.total_amount ?? inv.amount ?? 0),
     notes: inv.notes || "",
     items,
     last_reminder_sent_at: inv.last_reminder_sent_at || null,
+    payment_link: inv.payment_link || "",
   };
 }
 
@@ -263,8 +329,10 @@ function invoiceToForm(invoice) {
     clientName: normalized.client_name,
     clientEmail: normalized.client_email,
     clientAddress: normalized.client_address,
+    clientPhone: normalized.client_phone,
     issueDate: normalized.issue_date || getTodayDateString(),
     dueDate: normalized.due_date || getFutureDateString(14),
+    nextIssueDate: normalized.next_issue_date || getFutureDateString(30),
     status: normalized.status,
     currency: normalized.currency,
     timezone: normalized.timezone,
@@ -273,6 +341,9 @@ function invoiceToForm(invoice) {
     taxRate: String(normalized.tax_rate ?? 0),
     gstEnabled: normalized.gst_enabled,
     reminderEnabled: normalized.reminder_enabled,
+    recurringEnabled: normalized.recurring_enabled,
+    recurringFrequency: normalized.recurring_frequency,
+    paymentLink: normalized.payment_link,
     notes: normalized.notes || "",
     items:
       normalized.items.map((item) => ({
@@ -545,9 +616,12 @@ export default function Home() {
   const [form, setForm] = useState(createInitialForm);
   const [brandProfile, setBrandProfile] = useState(createBrandProfile);
   const [invoices, setInvoices] = useState([]);
+  const [clients, setClients] = useState([]);
   const [editingInvoiceId, setEditingInvoiceId] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
+  const [emailComposer, setEmailComposer] = useState(null);
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState("");
   const [loginError, setLoginError] = useState("");
   const [dataError, setDataError] = useState("");
@@ -573,6 +647,11 @@ export default function Home() {
   const taxAmount = form.taxEnabled ? subtotal * (taxRateNumber / 100) : 0;
   const totalAmount = subtotal + taxAmount;
   const paidInvoices = invoices.filter((invoice) => invoice.status === "paid");
+  const revenueData = useMemo(() => buildMonthlyRevenueData(invoices), [invoices]);
+  const maxRevenue = Math.max(
+    ...revenueData.map((item) => item.paid + item.pending),
+    1
+  );
   const filteredInvoices = invoices.filter((invoice) => {
     const matchesFilter =
       historyFilter === "all" ? true : invoice.status === historyFilter;
@@ -582,6 +661,9 @@ export default function Home() {
 
     return matchesFilter && matchesSearch;
   });
+  const suggestedClients = clients.filter((client) =>
+    client.name.toLowerCase().includes(clientSearch.toLowerCase())
+  );
 
   const getFriendlySupabaseError = (error, action) => {
     const message = error?.message || "";
@@ -621,6 +703,19 @@ export default function Home() {
     setInvoices((data || []).map(normalizeInvoice));
   }, []);
 
+  const fetchClients = useCallback(async (userId) => {
+    if (!supabase) return;
+
+    const { data, error } = await supabase
+      .from("clients")
+      .select("*")
+      .eq("user_id", userId)
+      .order("name", { ascending: true });
+
+    if (error) return;
+    setClients(data || []);
+  }, []);
+
   useEffect(() => {
     if (!supabase) return;
 
@@ -633,6 +728,7 @@ export default function Home() {
       if (data.session?.user) {
         setUser(data.session.user);
         fetchInvoices(data.session.user.id);
+        fetchClients(data.session.user.id);
       }
 
       setAuthReady(true);
@@ -645,9 +741,11 @@ export default function Home() {
         if (session?.user) {
           setUser(session.user);
           fetchInvoices(session.user.id);
+          fetchClients(session.user.id);
         } else {
           setUser(null);
           setInvoices([]);
+          setClients([]);
         }
         setAuthReady(true);
       }
@@ -657,7 +755,7 @@ export default function Home() {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [fetchInvoices]);
+  }, [fetchClients, fetchInvoices]);
 
   useEffect(() => {
     if (!user) return;
@@ -812,6 +910,7 @@ export default function Home() {
   const resetDraft = () => {
     setForm(createInitialForm());
     setEditingInvoiceId(null);
+    setClientSearch("");
     setDataError("");
     setReminderMessage("");
 
@@ -823,6 +922,7 @@ export default function Home() {
   const clearSavedDraftState = () => {
     setForm(createInitialForm());
     setEditingInvoiceId(null);
+    setClientSearch("");
     setLastDraftSavedAt("");
 
     if (user) {
@@ -833,6 +933,7 @@ export default function Home() {
   const startEditingInvoice = (invoice) => {
     setEditingInvoiceId(invoice.id);
     setForm(invoiceToForm(invoice));
+    setClientSearch(invoice.client_name || "");
     setSaveSuccess(`Editing ${invoice.invoice_number}.`);
     setDataError("");
     setReminderMessage("");
@@ -849,6 +950,29 @@ export default function Home() {
     } catch (error) {
       setDataError(error.message || "Unable to upload logo.");
     }
+  };
+
+  const applyClient = (client) => {
+    setForm((current) => ({
+      ...current,
+      clientName: client.name || "",
+      clientEmail: client.email || "",
+      clientAddress: client.address || "",
+      clientPhone: client.phone || "",
+    }));
+    setClientSearch(client.name || "");
+  };
+
+  const openEmailComposer = (invoice) => {
+    setEmailComposer({
+      invoiceId: invoice.id,
+      subject: `${invoice.invoice_number} from ${brandProfile.companyName}`,
+      message: `Hello ${invoice.client_name},\n\nSharing invoice ${invoice.invoice_number} for ${formatCurrency(
+        invoice.total_amount,
+        invoice.currency
+      )}.\n\nPlease review the attached invoice and use the payment link if you'd like to pay online.\n\nThanks,\n${brandProfile.companyName}`,
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const validateForm = () => {
@@ -899,7 +1023,9 @@ export default function Home() {
     const clientName = safeString(form.clientName).trim();
     const clientEmail = safeString(form.clientEmail).trim();
     const clientAddress = safeString(form.clientAddress).trim();
+    const clientPhone = safeString(form.clientPhone).trim();
     const taxLabel = safeString(form.taxLabel, "Tax").trim() || "Tax";
+    const paymentLink = safeString(form.paymentLink).trim();
     const notes = safeString(form.notes).trim();
 
     const payload = {
@@ -909,8 +1035,10 @@ export default function Home() {
       client_name: clientName,
       client_email: clientEmail,
       client_address: clientAddress,
+      client_phone: clientPhone,
       issue_date: form.issueDate,
       due_date: form.dueDate,
+      next_issue_date: form.nextIssueDate,
       status: form.status,
       currency: form.currency,
       timezone: form.timezone,
@@ -919,10 +1047,13 @@ export default function Home() {
       tax_rate: form.taxEnabled ? taxRateNumber : 0,
       gst_enabled: form.gstEnabled,
       reminder_enabled: form.reminderEnabled,
+      recurring_enabled: form.recurringEnabled,
+      recurring_frequency: form.recurringFrequency,
       subtotal,
       tax_amount: form.taxEnabled ? taxAmount : 0,
       total_amount: totalAmount,
       amount: totalAmount,
+      payment_link: paymentLink,
       notes,
       items: cleanedItems,
     };
@@ -946,6 +1077,22 @@ export default function Home() {
     if (error) {
       setDataError(getFriendlySupabaseError(error, "save invoice"));
       return;
+    }
+
+    if (clientName) {
+      await supabase.from("clients").upsert(
+        [
+          {
+            user_id: user.id,
+            name: clientName,
+            email: clientEmail,
+            address: clientAddress,
+            phone: clientPhone,
+          },
+        ],
+        { onConflict: "user_id,name" }
+      );
+      fetchClients(user.id);
     }
 
     setSaveSuccess(
@@ -1020,6 +1167,42 @@ export default function Home() {
     fetchInvoices(user.id);
   };
 
+  const sendInvoiceEmail = async () => {
+    if (!emailComposer || !supabase) return;
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    setIsSendingReminder(emailComposer.invoiceId);
+    setDataError("");
+
+    const response = await fetch("/api/send-invoice", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: session?.access_token ? `Bearer ${session.access_token}` : "",
+      },
+      body: JSON.stringify({
+        invoiceId: emailComposer.invoiceId,
+        subject: emailComposer.subject,
+        message: emailComposer.message,
+        brandProfile,
+      }),
+    });
+
+    const result = await response.json();
+    setIsSendingReminder(null);
+
+    if (!response.ok) {
+      setDataError(result.error || "Unable to send invoice email.");
+      return;
+    }
+
+    setSaveSuccess(result.message || "Invoice email sent.");
+    setEmailComposer(null);
+  };
+
   const shareViaWhatsApp = (invoice) => {
     const text = buildWhatsAppText(invoice, brandProfile);
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
@@ -1030,8 +1213,10 @@ export default function Home() {
     client_name: form.clientName,
     client_email: form.clientEmail,
     client_address: form.clientAddress,
+    client_phone: form.clientPhone,
     issue_date: form.issueDate,
     due_date: form.dueDate,
+    next_issue_date: form.nextIssueDate,
     status: form.status,
     currency: form.currency,
     timezone: form.timezone,
@@ -1039,9 +1224,12 @@ export default function Home() {
     tax_label: form.gstEnabled ? "GST" : form.taxLabel,
     tax_rate: taxRateNumber,
     gst_enabled: form.gstEnabled,
+    recurring_enabled: form.recurringEnabled,
+    recurring_frequency: form.recurringFrequency,
     subtotal,
     tax_amount: taxAmount,
     total_amount: totalAmount,
+    payment_link: form.paymentLink,
     notes: form.notes,
     items: form.items,
   };
@@ -1272,10 +1460,27 @@ export default function Home() {
                   <span className="text-sm font-medium text-slate-700">Client name</span>
                   <input
                     value={form.clientName}
-                    onChange={(event) => updateFormField("clientName", event.target.value)}
+                    onChange={(event) => {
+                      updateFormField("clientName", event.target.value);
+                      setClientSearch(event.target.value);
+                    }}
                     placeholder="Aster Studio"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
+                  {clientSearch && suggestedClients.length > 0 ? (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-2">
+                      {suggestedClients.slice(0, 3).map((client) => (
+                        <button
+                          key={`${client.user_id}-${client.name}`}
+                          onClick={() => applyClient(client)}
+                          className="flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50"
+                        >
+                          <span>{client.name}</span>
+                          <span className="text-xs text-slate-400">{client.email || "Saved client"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </label>
 
                 <label className="space-y-2">
@@ -1296,6 +1501,16 @@ export default function Home() {
                     value={form.clientAddress}
                     onChange={(event) => updateFormField("clientAddress", event.target.value)}
                     placeholder="22 Residency Road, Bengaluru, Karnataka"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Client phone</span>
+                  <input
+                    value={form.clientPhone}
+                    onChange={(event) => updateFormField("clientPhone", event.target.value)}
+                    placeholder="+91 98765 43210"
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
                   />
                 </label>
@@ -1432,6 +1647,59 @@ export default function Home() {
                     className="h-5 w-5"
                   />
                 </label>
+
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 md:col-span-2">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="flex min-h-14 items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <span className="text-sm font-medium text-slate-700">Recurring invoice</span>
+                      <input
+                        type="checkbox"
+                        checked={form.recurringEnabled}
+                        onChange={(event) => updateFormField("recurringEnabled", event.target.checked)}
+                        className="h-5 w-5"
+                      />
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-slate-700">Payment link</span>
+                      <input
+                        value={form.paymentLink}
+                        onChange={(event) => updateFormField("paymentLink", event.target.value)}
+                        placeholder="https://buy.stripe.com/... or https://rzp.io/..."
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                      />
+                    </label>
+
+                    {form.recurringEnabled ? (
+                      <>
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium text-slate-700">Frequency</span>
+                          <select
+                            value={form.recurringFrequency}
+                            onChange={(event) =>
+                              updateFormField("recurringFrequency", event.target.value)
+                            }
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                          >
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                            <option value="quarterly">Quarterly</option>
+                          </select>
+                        </label>
+
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium text-slate-700">Next issue date</span>
+                          <input
+                            type="date"
+                            value={form.nextIssueDate}
+                            onChange={(event) => updateFormField("nextIssueDate", event.target.value)}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
               </div>
 
               <div className="mt-10">
@@ -1542,6 +1810,71 @@ export default function Home() {
           </div>
 
           <div className="space-y-6">
+            <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Earnings dashboard</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                    Revenue snapshot
+                  </h2>
+                </div>
+                <p className="text-sm text-slate-500">Last 6 months</p>
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="text-sm text-slate-500">Paid invoices</p>
+                  <p className="mt-2 text-2xl font-semibold text-slate-950">
+                    {paidInvoices.length}
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="text-sm text-slate-500">Pending invoices</p>
+                  <p className="mt-2 text-2xl font-semibold text-slate-950">
+                    {invoices.filter((invoice) => invoice.status !== "paid").length}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="flex h-48 items-end gap-3">
+                  {revenueData.map((month) => {
+                    const combined = month.paid + month.pending;
+                    const paidHeight = `${(month.paid / maxRevenue) * 100}%`;
+                    const pendingHeight = `${(combined / maxRevenue) * 100}%`;
+
+                    return (
+                      <div key={month.key} className="flex flex-1 flex-col items-center gap-3">
+                        <div className="relative flex h-36 w-full items-end justify-center rounded-2xl bg-white">
+                          <div
+                            className="absolute bottom-0 w-8 rounded-t-2xl bg-sky-100"
+                            style={{ height: pendingHeight }}
+                          />
+                          <div
+                            className="absolute bottom-0 w-8 rounded-t-2xl bg-slate-950"
+                            style={{ height: paidHeight }}
+                          />
+                        </div>
+                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                          {month.label}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-4 flex items-center gap-4 text-xs text-slate-500">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-3 w-3 rounded-full bg-slate-950" />
+                    Paid
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-3 w-3 rounded-full bg-sky-100" />
+                    Pending
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-[32px] border border-slate-200/80 bg-slate-950 p-6 text-white shadow-[0_24px_80px_rgba(15,23,42,0.16)] sm:p-8">
               <p className="text-sm uppercase tracking-[0.22em] text-slate-400">Live summary</p>
               <h2 className="mt-3 text-2xl font-semibold tracking-tight">
@@ -1583,6 +1916,58 @@ export default function Home() {
                 <p className="mt-4 text-sm text-slate-400">Timezone: {form.timezone}</p>
               </div>
             </div>
+
+            {emailComposer ? (
+              <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Send invoice</p>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                      Email composer
+                    </h2>
+                  </div>
+                  <button
+                    onClick={() => setEmailComposer(null)}
+                    className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="mt-6 grid gap-4">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700">Subject</span>
+                    <input
+                      value={emailComposer.subject}
+                      onChange={(event) =>
+                        setEmailComposer((current) => ({ ...current, subject: event.target.value }))
+                      }
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                    />
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700">Message</span>
+                    <textarea
+                      rows={6}
+                      value={emailComposer.message}
+                      onChange={(event) =>
+                        setEmailComposer((current) => ({ ...current, message: event.target.value }))
+                      }
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                    />
+                  </label>
+
+                  <button
+                    onClick={sendInvoiceEmail}
+                    disabled={isSendingReminder === emailComposer.invoiceId}
+                    className="min-h-12 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSendingReminder === emailComposer.invoiceId ? "Sending email..." : "Send invoice email"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
               <div className="flex items-end justify-between gap-4">
@@ -1802,11 +2187,27 @@ export default function Home() {
                     </div>
 
                     <div className="mt-5 flex flex-wrap gap-3">
+                      {invoice.payment_link ? (
+                        <a
+                          href={invoice.payment_link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                        >
+                          Pay now
+                        </a>
+                      ) : null}
                       <button
                         onClick={() => startEditingInvoice(invoice)}
                         className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
                       >
                         Edit
+                      </button>
+                      <button
+                        onClick={() => openEmailComposer(invoice)}
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      >
+                        Email invoice
                       </button>
                       <button
                         onClick={() =>
