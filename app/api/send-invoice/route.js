@@ -86,6 +86,10 @@ export async function POST(request) {
     );
   }
 
+  const publicInvoiceUrl = invoice.public_slug
+    ? `${request.nextUrl.origin}/invoice/${invoice.public_slug}`
+    : "";
+
   const html = `
     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937;">
       <h2 style="margin-bottom:8px;">${subject}</h2>
@@ -97,6 +101,11 @@ export async function POST(request) {
       ${
         invoice.payment_link
           ? `<p><a href="${invoice.payment_link}" style="display:inline-block;padding:12px 18px;background:#0f172a;color:#fff;border-radius:12px;text-decoration:none;">Pay Now</a></p>`
+          : ""
+      }
+      ${
+        publicInvoiceUrl
+          ? `<p><a href="${publicInvoiceUrl}" style="display:inline-block;padding:12px 18px;border:1px solid #cbd5e1;color:#0f172a;border-radius:12px;text-decoration:none;">View invoice online</a></p>`
           : ""
       }
       <p>Sent by ${brandProfile?.companyName || "ForgeInvoice"}.</p>

@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
+import { trackEvent } from "../../lib/analytics";
 
 export default function PricingPage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,12 +16,21 @@ export default function PricingPage() {
   const [authMessage, setAuthMessage] = useState("");
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    trackEvent("landing_viewed", {
+      screen: "pricing",
+    });
+  }, []);
+
   const startFree = async () => {
     if (!supabase) return;
 
     setError("");
     setAuthMessage("");
     setIsLoading(true);
+    trackEvent("auth_google_started", {
+      screen: "pricing",
+    });
 
     const { data, error: loginError } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -33,6 +43,10 @@ export default function PricingPage() {
     setIsLoading(false);
 
     if (loginError) {
+      trackEvent("auth_google_failed", {
+        screen: "pricing",
+        message: loginError.message || "unknown_error",
+      });
       setError(loginError.message || "Unable to start sign in.");
       return;
     }
@@ -88,11 +102,19 @@ export default function PricingPage() {
       setIsLoading(false);
 
       if (signUpError) {
+        trackEvent("auth_signup_failed", {
+          screen: "pricing",
+          message: signUpError.message || "unknown_error",
+        });
         setError(signUpError.message || "Unable to create your account.");
         return;
       }
 
       setAuthForm({ email, password: "", confirmPassword: "" });
+      trackEvent("auth_signup_completed", {
+        screen: "pricing",
+        method: "email_password",
+      });
       setAuthMessage(
         "Account created. If email confirmation is enabled in Supabase, confirm your email before signing in."
       );
@@ -108,10 +130,19 @@ export default function PricingPage() {
     setIsLoading(false);
 
     if (signInError) {
+      trackEvent("auth_signin_failed", {
+        screen: "pricing",
+        method: "email_password",
+        message: signInError.message || "unknown_error",
+      });
       setError(signInError.message || "Unable to sign in with email and password.");
       return;
     }
 
+    trackEvent("auth_signin_completed", {
+      screen: "pricing",
+      method: "email_password",
+    });
     window.location.assign("/");
   };
 
@@ -136,10 +167,17 @@ export default function PricingPage() {
     setIsLoading(false);
 
     if (resetError) {
+      trackEvent("password_reset_failed", {
+        screen: "pricing",
+        message: resetError.message || "unknown_error",
+      });
       setError(resetError.message || "Unable to send the reset email.");
       return;
     }
 
+    trackEvent("password_reset_requested", {
+      screen: "pricing",
+    });
     setAuthMessage("Password reset email sent. Open the link in your inbox to choose a new password.");
   };
 

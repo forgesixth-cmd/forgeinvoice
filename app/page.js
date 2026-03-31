@@ -4,6 +4,7 @@ import Image from "next/image";
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
 import { supabase } from "../lib/supabase";
+import { identifyUser, resetAnalyticsIdentity, trackEvent } from "../lib/analytics";
 
 const STATUS_STYLES = {
   draft: "bg-amber-100 text-amber-800",
@@ -37,6 +38,14 @@ function getFutureDateString(daysAhead) {
 
 function createInvoiceNumber() {
   return `INV-${Date.now().toString().slice(-6)}`;
+}
+
+function createPublicSlug() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+
+  return Math.random().toString(36).slice(2, 14);
 }
 
 function createEmptyItem() {
@@ -170,6 +179,11 @@ function getDraftStorageKey(userId) {
 
 function getBrandStorageKey(userId) {
   return `forgeinvoice:brand:${userId}`;
+}
+
+function buildPublicInvoiceUrl(invoice) {
+  if (typeof window === "undefined" || !invoice?.public_slug) return "";
+  return `${window.location.origin}/invoice/${invoice.public_slug}`;
 }
 
 function formatCurrency(value, currency = "INR") {
@@ -322,6 +336,7 @@ function normalizeInvoice(inv) {
     items,
     last_reminder_sent_at: inv.last_reminder_sent_at || null,
     payment_link: inv.payment_link || "",
+    public_slug: inv.public_slug || "",
   };
 }
 
@@ -369,12 +384,14 @@ function readFileAsDataUrl(file) {
 
 function buildWhatsAppText(invoice, brandProfile) {
   const normalized = normalizeInvoice(invoice);
+  const publicUrl = buildPublicInvoiceUrl(normalized);
   const lines = [
     `${brandProfile.companyName || "ForgeInvoice"} invoice ${normalized.invoice_number}`,
     `Client: ${normalized.client_name}`,
     `Amount: ${formatCurrency(normalized.total_amount, normalized.currency)}`,
     `Due: ${formatDate(normalized.due_date, normalized.timezone)}`,
     brandProfile.paymentInstructions || "",
+    publicUrl,
   ].filter(Boolean);
 
   return lines.join("\n");
@@ -686,6 +703,36 @@ export default function Home() {
   const suggestedClients = clients.filter((client) =>
     client.name.toLowerCase().includes(clientSearch.toLowerCase())
   );
+  const onboardingSteps = [
+    {
+      id: "business",
+      label: "Add business name",
+      description: brandProfile.companyName ? brandProfile.companyName : "Set your sender identity.",
+      complete: Boolean(safeString(brandProfile.companyName).trim()),
+      action: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+      actionLabel: "Update profile",
+    },
+    {
+      id: "logo",
+      label: "Add logo",
+      description: brandProfile.logoDataUrl ? "Logo uploaded" : "Upload a logo for premium PDFs.",
+      complete: Boolean(brandProfile.logoDataUrl),
+      action: () => window.scrollTo({ top: document.body.scrollHeight * 0.55, behavior: "smooth" }),
+      actionLabel: "Add logo",
+    },
+    {
+      id: "invoice",
+      label: "Create first invoice",
+      description:
+        invoices.length > 0
+          ? `${invoices.length} invoice${invoices.length === 1 ? "" : "s"} created`
+          : "Save your first invoice to activate the workspace.",
+      complete: invoices.length > 0,
+      action: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+      actionLabel: invoices.length > 0 ? "Keep building" : "Create invoice",
+    },
+  ];
+  const onboardingComplete = onboardingSteps.every((step) => step.complete);
 
   const getFriendlySupabaseError = (error, action) => {
     const message = error?.message || "";
@@ -802,6 +849,23 @@ export default function Home() {
   }, [fetchClients, fetchInvoices, fetchSubscription]);
 
   useEffect(() => {
+    if (!authReady) return;
+
+    if (user) {
+      identifyUser(user);
+      trackEvent("workspace_opened", {
+        user_id: user.id,
+      });
+      return;
+    }
+
+    resetAnalyticsIdentity();
+    trackEvent("landing_viewed", {
+      screen: "home",
+    });
+  }, [authReady, user]);
+
+  useEffect(() => {
     if (!user) return;
 
     const savedDraft = window.localStorage.getItem(getDraftStorageKey(user.id));
@@ -867,6 +931,9 @@ export default function Home() {
     setLoginError("");
     setAuthMessage("");
     setIsLoggingIn(true);
+    trackEvent("auth_google_started", {
+      screen: "home",
+    });
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -878,10 +945,13 @@ export default function Home() {
 
     setIsLoggingIn(false);
 
-    if (error) {
-      setLoginError(error.message || "Unable to start login. Please try again.");
-      return;
-    }
+      if (error) {
+        setLoginError(error.message || "Unable to start login. Please try again.");
+        trackEvent("auth_google_failed", {
+          message: error.message || "unknown_error",
+        });
+        return;
+      }
 
     if (data?.url) {
       window.location.assign(data.url);
@@ -889,6 +959,9 @@ export default function Home() {
     }
 
     setLoginError("Unable to start login. Please verify your Supabase auth settings.");
+    trackEvent("auth_google_failed", {
+      message: "missing_redirect_url",
+    });
   };
 
   const updateAuthField = (field, value) => {
@@ -938,10 +1011,16 @@ export default function Home() {
 
       if (error) {
         setLoginError(error.message || "Unable to create your account.");
+        trackEvent("auth_signup_failed", {
+          message: error.message || "unknown_error",
+        });
         return;
       }
 
       setAuthForm({ email, password: "", confirmPassword: "" });
+      trackEvent("auth_signup_completed", {
+        method: "email_password",
+      });
       setAuthMessage(
         "Account created. If email confirmation is enabled in Supabase, check your inbox before signing in."
       );
@@ -958,9 +1037,16 @@ export default function Home() {
 
     if (error) {
       setLoginError(error.message || "Unable to sign in with email and password.");
+      trackEvent("auth_signin_failed", {
+        method: "email_password",
+        message: error.message || "unknown_error",
+      });
       return;
     }
 
+    trackEvent("auth_signin_completed", {
+      method: "email_password",
+    });
     setAuthForm({ email: "", password: "", confirmPassword: "" });
   };
 
@@ -986,9 +1072,15 @@ export default function Home() {
 
     if (error) {
       setLoginError(error.message || "Unable to send the reset email.");
+      trackEvent("password_reset_failed", {
+        message: error.message || "unknown_error",
+      });
       return;
     }
 
+    trackEvent("password_reset_requested", {
+      screen: "home",
+    });
     setAuthMessage("Password reset email sent. Open the link in your inbox to choose a new password.");
   };
 
@@ -1098,6 +1190,7 @@ export default function Home() {
     try {
       const dataUrl = await readFileAsDataUrl(file);
       updateBrandField("logoDataUrl", dataUrl);
+      trackEvent("onboarding_logo_added");
     } catch (error) {
       setDataError(error.message || "Unable to upload logo.");
     }
@@ -1105,6 +1198,9 @@ export default function Home() {
 
   const openUpgradeModal = (reason) => {
     setUpgradeModal(reason);
+    trackEvent("upgrade_modal_opened", {
+      reason,
+    });
   };
 
   const startUpgrade = async () => {
@@ -1121,6 +1217,9 @@ export default function Home() {
 
     setIsStartingUpgrade(true);
     setDataError("");
+    trackEvent("upgrade_started", {
+      provider: "razorpay",
+    });
 
     const response = await fetch("/api/billing/create-subscription", {
       method: "POST",
@@ -1179,15 +1278,31 @@ export default function Home() {
   };
 
   const openEmailComposer = (invoice) => {
+    const publicUrl = buildPublicInvoiceUrl(invoice);
     setEmailComposer({
       invoiceId: invoice.id,
       subject: `${invoice.invoice_number} from ${brandProfile.companyName}`,
       message: `Hello ${invoice.client_name},\n\nSharing invoice ${invoice.invoice_number} for ${formatCurrency(
         invoice.total_amount,
         invoice.currency
-      )}.\n\nPlease review the attached invoice and use the payment link if you'd like to pay online.\n\nThanks,\n${brandProfile.companyName}`,
+      )}.${publicUrl ? `\n\nView invoice online: ${publicUrl}` : ""}\n\nPlease review the attached invoice and use the payment link if you'd like to pay online.\n\nThanks,\n${brandProfile.companyName}`,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const copyPublicInvoiceLink = async (invoice) => {
+    const publicUrl = buildPublicInvoiceUrl(invoice);
+    if (!publicUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(publicUrl);
+      setSaveSuccess(`Public invoice link copied for ${invoice.invoice_number}.`);
+      trackEvent("public_invoice_link_copied", {
+        invoice_number: invoice.invoice_number,
+      });
+    } catch {
+      setDataError("Unable to copy the public invoice link.");
+    }
   };
 
   const validateForm = () => {
@@ -1247,6 +1362,9 @@ export default function Home() {
     const taxLabel = safeString(form.taxLabel, "Tax").trim() || "Tax";
     const paymentLink = safeString(form.paymentLink).trim();
     const notes = safeString(form.notes).trim();
+    const publicSlug = editingInvoiceId
+      ? invoices.find((invoice) => invoice.id === editingInvoiceId)?.public_slug || createPublicSlug()
+      : createPublicSlug();
 
     const payload = {
       user_id: user.id,
@@ -1274,6 +1392,7 @@ export default function Home() {
       total_amount: totalAmount,
       amount: totalAmount,
       payment_link: paymentLink,
+      public_slug: publicSlug,
       notes,
       items: cleanedItems,
     };
@@ -1282,6 +1401,11 @@ export default function Home() {
     setSaveSuccess("");
     setReminderMessage("");
     setIsSaving(true);
+    trackEvent("invoice_save_attempted", {
+      mode: editingInvoiceId ? "update" : "create",
+      has_payment_link: Boolean(paymentLink),
+      recurring_enabled: form.recurringEnabled,
+    });
 
     const query = editingInvoiceId
       ? supabase
@@ -1296,6 +1420,10 @@ export default function Home() {
 
     if (error) {
       setDataError(getFriendlySupabaseError(error, "save invoice"));
+      trackEvent("invoice_save_failed", {
+        mode: editingInvoiceId ? "update" : "create",
+        message: error.message || "unknown_error",
+      });
       return;
     }
 
@@ -1320,6 +1448,17 @@ export default function Home() {
         ? `Invoice ${payload.invoice_number} updated successfully.`
         : `Invoice ${payload.invoice_number} saved successfully.`
     );
+    trackEvent(editingInvoiceId ? "invoice_updated" : "invoice_created", {
+      invoice_number: payload.invoice_number,
+      currency: payload.currency,
+      total_amount: totalAmount,
+      public_slug: publicSlug,
+    });
+    if (!editingInvoiceId && invoices.length === 0) {
+      trackEvent("first_invoice_created", {
+        invoice_number: payload.invoice_number,
+      });
+    }
     clearSavedDraftState();
     await fetchInvoices(user.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1425,6 +1564,9 @@ export default function Home() {
 
   const shareViaWhatsApp = (invoice) => {
     const text = buildWhatsAppText(invoice, brandProfile);
+    trackEvent("invoice_shared_whatsapp", {
+      invoice_number: invoice.invoice_number,
+    });
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
   };
 
@@ -1450,6 +1592,9 @@ export default function Home() {
     tax_amount: taxAmount,
     total_amount: totalAmount,
     payment_link: form.paymentLink,
+    public_slug: editingInvoiceId
+      ? invoices.find((invoice) => invoice.id === editingInvoiceId)?.public_slug || ""
+      : "",
     notes: form.notes,
     items: form.items,
   };
@@ -1742,6 +1887,62 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        {!onboardingComplete ? (
+          <section className="mt-6 rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Onboarding</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                  Finish your workspace in three quick steps
+                </h2>
+                <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
+                  Add your business name, upload a logo, and create your first invoice so
+                  the app feels complete the next time you open it.
+                </p>
+              </div>
+              <p className="text-sm font-medium text-slate-500">
+                {onboardingSteps.filter((step) => step.complete).length} / {onboardingSteps.length} completed
+              </p>
+            </div>
+
+            <div className="mt-6 grid gap-4 lg:grid-cols-3">
+              {onboardingSteps.map((step, index) => (
+                <div
+                  key={step.id}
+                  className={`rounded-3xl border p-5 ${
+                    step.complete
+                      ? "border-emerald-200 bg-emerald-50/70"
+                      : "border-slate-200 bg-slate-50/80"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      Step {index + 1}
+                    </p>
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                        step.complete
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-white text-slate-600"
+                      }`}
+                    >
+                      {step.complete ? "Done" : "Pending"}
+                    </span>
+                  </div>
+                  <h3 className="mt-4 text-lg font-semibold text-slate-950">{step.label}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{step.description}</p>
+                  <button
+                    onClick={step.action}
+                    className="mt-5 min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                  >
+                    {step.actionLabel}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-6">
@@ -2320,6 +2521,24 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+
+              <div className="mt-6 rounded-3xl bg-white/6 p-5">
+                <p className="text-sm text-slate-400">Public invoice page</p>
+                <div className="mt-4 space-y-3 text-sm">
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="text-slate-500">Shareable URL</span>
+                    <span className="max-w-[14rem] text-right text-white">
+                      {editingInvoiceId
+                        ? "Ready after save or update"
+                        : "Created automatically when you save"}
+                    </span>
+                  </div>
+                  <p className="text-slate-400">
+                    Clients can open the invoice without logging in and use the payment link
+                    directly from the public page.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {emailComposer ? (
@@ -2551,8 +2770,26 @@ export default function Home() {
 
             <div className="mt-6 grid gap-4 xl:grid-cols-2">
               {filteredInvoices.length === 0 ? (
-                <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center text-slate-500 xl:col-span-2">
-                  No invoices match this view yet. Save or search for another invoice.
+                <div className="rounded-3xl border border-dashed border-slate-300 bg-[linear-gradient(135deg,_rgba(255,253,247,0.95),_rgba(238,244,255,0.95))] px-5 py-10 text-center xl:col-span-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                    Empty state
+                  </p>
+                  <h3 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+                    {invoices.length === 0
+                      ? "Create your first invoice in 30 seconds"
+                      : "No invoices match this view yet"}
+                  </h3>
+                  <p className="mt-3 text-sm leading-7 text-slate-600">
+                    {invoices.length === 0
+                      ? "Add a client, one line item, and save. Your recent invoices, reminders, and public share links will appear here."
+                      : "Try another client search or status filter to find the invoice you want."}
+                  </p>
+                  <button
+                    onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                    className="mt-6 min-h-12 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+                  >
+                    {invoices.length === 0 ? "Start first invoice" : "Back to invoice form"}
+                  </button>
                 </div>
               ) : null}
 
@@ -2606,11 +2843,27 @@ export default function Home() {
                         Pay now
                       </a>
                     ) : null}
+                    {invoice.public_slug ? (
+                      <a
+                        href={`/invoice/${invoice.public_slug}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                      >
+                        View invoice
+                      </a>
+                    ) : null}
                     <button
                       onClick={() => startEditingInvoice(invoice)}
                       className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
                     >
                       Edit
+                    </button>
+                    <button
+                      onClick={() => copyPublicInvoiceLink(invoice)}
+                      className="min-h-11 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+                    >
+                      Copy public link
                     </button>
                     <button
                       onClick={() => openEmailComposer(invoice)}
