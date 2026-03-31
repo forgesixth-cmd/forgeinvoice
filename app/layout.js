@@ -1,5 +1,5 @@
 import "./globals.css";
-import { Analytics } from '@vercel/analytics/next';
+import Script from "next/script";
 
 export const metadata = {
   title: "ForgeInvoice",
@@ -11,7 +11,7 @@ export default function RootLayout({ children }) {
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
         {children}
-        <Analytics />
+        <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
       </body>
     </html>
   );

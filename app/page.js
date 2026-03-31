@@ -231,6 +231,10 @@ function summarizeTotalsByCurrency(invoices) {
     .join(" • ");
 }
 
+function isActivePro(subscription) {
+  return subscription?.plan === "pro" && subscription?.status === "active";
+}
+
 function buildMonthlyRevenueData(invoices) {
   const now = new Date();
   const months = Array.from({ length: 6 }, (_, index) => {
@@ -617,11 +621,16 @@ export default function Home() {
   const [brandProfile, setBrandProfile] = useState(createBrandProfile);
   const [invoices, setInvoices] = useState([]);
   const [clients, setClients] = useState([]);
+  const [subscription, setSubscription] = useState({
+    plan: "free",
+    status: "inactive",
+  });
   const [editingInvoiceId, setEditingInvoiceId] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientSearch, setClientSearch] = useState("");
   const [emailComposer, setEmailComposer] = useState(null);
+  const [upgradeModal, setUpgradeModal] = useState(null);
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState("");
   const [loginError, setLoginError] = useState("");
   const [dataError, setDataError] = useState("");
@@ -629,6 +638,7 @@ export default function Home() {
   const [reminderMessage, setReminderMessage] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isStartingUpgrade, setIsStartingUpgrade] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(null);
   const [isSendingReminder, setIsSendingReminder] = useState(null);
   const configError = !supabase
@@ -647,6 +657,9 @@ export default function Home() {
   const taxAmount = form.taxEnabled ? subtotal * (taxRateNumber / 100) : 0;
   const totalAmount = subtotal + taxAmount;
   const paidInvoices = invoices.filter((invoice) => invoice.status === "paid");
+  const activePro = isActivePro(subscription);
+  const freeInvoiceLimit = 3;
+  const invoicesRemaining = Math.max(freeInvoiceLimit - invoices.length, 0);
   const revenueData = useMemo(() => buildMonthlyRevenueData(invoices), [invoices]);
   const maxRevenue = Math.max(
     ...revenueData.map((item) => item.paid + item.pending),
@@ -716,6 +729,25 @@ export default function Home() {
     setClients(data || []);
   }, []);
 
+  const fetchSubscription = useCallback(async (userId) => {
+    if (!supabase) return;
+
+    const { data, error } = await supabase
+      .from("subscriptions")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) return;
+
+    setSubscription(
+      data || {
+        plan: "free",
+        status: "inactive",
+      }
+    );
+  }, []);
+
   useEffect(() => {
     if (!supabase) return;
 
@@ -729,6 +761,7 @@ export default function Home() {
         setUser(data.session.user);
         fetchInvoices(data.session.user.id);
         fetchClients(data.session.user.id);
+        fetchSubscription(data.session.user.id);
       }
 
       setAuthReady(true);
@@ -742,10 +775,12 @@ export default function Home() {
           setUser(session.user);
           fetchInvoices(session.user.id);
           fetchClients(session.user.id);
+          fetchSubscription(session.user.id);
         } else {
           setUser(null);
           setInvoices([]);
           setClients([]);
+          setSubscription({ plan: "free", status: "inactive" });
         }
         setAuthReady(true);
       }
@@ -755,7 +790,7 @@ export default function Home() {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [fetchClients, fetchInvoices]);
+  }, [fetchClients, fetchInvoices, fetchSubscription]);
 
   useEffect(() => {
     if (!user) return;
@@ -859,6 +894,11 @@ export default function Home() {
   };
 
   const updateFormField = (field, value) => {
+    if (field === "paymentLink" && value && !activePro) {
+      openUpgradeModal("payment_link");
+      return;
+    }
+
     setForm((current) => {
       if (field === "gstEnabled") {
         return {
@@ -952,6 +992,70 @@ export default function Home() {
     }
   };
 
+  const openUpgradeModal = (reason) => {
+    setUpgradeModal(reason);
+  };
+
+  const startUpgrade = async () => {
+    if (!supabase || !user) return;
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      setDataError("Please sign in again before upgrading.");
+      return;
+    }
+
+    setIsStartingUpgrade(true);
+    setDataError("");
+
+    const response = await fetch("/api/billing/create-subscription", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      setIsStartingUpgrade(false);
+      setDataError(result.error || "Unable to start upgrade.");
+      return;
+    }
+
+    const checkout = new window.Razorpay({
+      key: result.keyId,
+      subscription_id: result.subscriptionId,
+      name: "ForgeInvoice Pro",
+      description: "Unlimited invoices and payment links",
+      prefill: {
+        email: user.email,
+      },
+      theme: {
+        color: "#0f172a",
+      },
+      handler: async () => {
+        setSaveSuccess("Payment confirmed. Activating your Pro plan...");
+        setUpgradeModal(null);
+        setTimeout(() => {
+          fetchSubscription(user.id);
+        }, 2500);
+      },
+      modal: {
+        ondismiss: () => {
+          setIsStartingUpgrade(false);
+        },
+      },
+    });
+
+    checkout.open();
+    setIsStartingUpgrade(false);
+  };
+
   const applyClient = (client) => {
     setForm((current) => ({
       ...current,
@@ -1004,6 +1108,11 @@ export default function Home() {
 
   const saveInvoice = async () => {
     if (!supabase || !user) return;
+
+    if (!editingInvoiceId && !activePro && invoices.length >= freeInvoiceLimit) {
+      openUpgradeModal("invoice_limit");
+      return;
+    }
 
     const validationError = validateForm();
     if (validationError) {
@@ -1276,7 +1385,7 @@ export default function Home() {
                 Studio-grade invoicing
               </p>
               <h1 className="mt-8 max-w-xl text-5xl font-semibold leading-tight tracking-[-0.04em] text-slate-950 sm:text-6xl">
-                Build invoices that feel ready for real clients.
+                Create international invoices in 30 seconds and get paid faster.
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-8 text-slate-600">
                 Google sign-in, saved sessions, reminders, mobile-ready actions,
@@ -1317,8 +1426,15 @@ export default function Home() {
                 disabled={isLoggingIn}
                 className="mt-8 inline-flex min-h-14 w-full items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isLoggingIn ? "Starting login..." : "Continue with Google"}
+                {isLoggingIn ? "Starting login..." : "Start Free"}
               </button>
+
+              <a
+                href="/pricing"
+                className="mt-3 inline-flex min-h-12 w-full items-center justify-center rounded-2xl border border-slate-300 bg-white px-6 py-4 text-base font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                View pricing
+              </a>
 
               {loginError ? (
                 <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -1348,9 +1464,26 @@ export default function Home() {
                 Create international-ready invoices with optional GST, reminders,
                 WhatsApp sharing, and premium PDF exports. Signed in as {user.email}.
               </p>
+              <p className="mt-3 text-sm font-medium text-slate-600">
+                {activePro
+                  ? "Pro plan active: unlimited invoices and payment links unlocked."
+                  : `${invoicesRemaining} of ${freeInvoiceLimit} free invoices remaining before upgrade.`}
+              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
+              <a
+                href="/pricing"
+                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                Pricing
+              </a>
+              <button
+                onClick={() => openUpgradeModal("manual")}
+                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                {activePro ? "Pro Active" : "Upgrade"}
+              </button>
               <button
                 onClick={resetDraft}
                 className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
@@ -2305,6 +2438,61 @@ export default function Home() {
           </div>
         </section>
       </div>
+
+      {upgradeModal ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[32px] border border-slate-200/80 bg-white p-8 shadow-[0_30px_100px_rgba(15,23,42,0.16)]">
+            <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Upgrade to Pro</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+              Unlock unlimited invoices and payments
+            </h2>
+            <p className="mt-4 text-base leading-7 text-slate-600">
+              {upgradeModal === "invoice_limit"
+                ? "Your free workspace includes 3 invoices. Upgrade now to create unlimited invoices."
+                : upgradeModal === "payment_link"
+                  ? "Payment links are a Pro feature. Upgrade now to let clients pay directly from your invoice."
+                  : "Upgrade to Pro to remove invoice limits and unlock payment collection."}
+            </p>
+
+            <div className="mt-8 grid gap-4 rounded-3xl border border-slate-200 bg-slate-50/80 p-5 sm:grid-cols-2">
+              <div>
+                <p className="text-sm text-slate-500">Free</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">₹0</p>
+                <p className="mt-3 text-sm text-slate-600">3 invoices total</p>
+              </div>
+              <div>
+                <p className="text-sm text-slate-500">Pro</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">₹499/mo</p>
+                <p className="mt-3 text-sm text-slate-600">
+                  Unlimited invoices, recurring billing, and payment links
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <button
+                onClick={startUpgrade}
+                disabled={isStartingUpgrade}
+                className="min-h-12 rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isStartingUpgrade ? "Starting upgrade..." : "Upgrade now"}
+              </button>
+              <a
+                href="/pricing"
+                className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-slate-300 bg-white px-6 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                View pricing
+              </a>
+              <button
+                onClick={() => setUpgradeModal(null)}
+                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-6 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200/80 bg-white/95 px-4 py-3 shadow-[0_-12px_40px_rgba(15,23,42,0.08)] backdrop-blur sm:hidden">
         <div className="mx-auto flex max-w-7xl gap-3">
