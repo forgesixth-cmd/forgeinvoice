@@ -1915,6 +1915,56 @@ export default function Home() {
                 </div>
                 <p className="mt-4 text-sm text-slate-400">Timezone: {form.timezone}</p>
               </div>
+
+              <div className="mt-6 rounded-3xl bg-white/6 p-5">
+                <p className="text-sm text-slate-400">Client snapshot</p>
+                <div className="mt-4 space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-slate-500">Email</span>
+                    <span className="text-right text-white">
+                      {form.clientEmail || "Not added"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-slate-500">Phone</span>
+                    <span className="text-right text-white">
+                      {form.clientPhone || "Not added"}
+                    </span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="text-slate-500">Billing</span>
+                    <span className="max-w-[14rem] text-right text-white">
+                      {form.clientAddress || "No billing address yet"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-3xl bg-white/6 p-5">
+                <p className="text-sm text-slate-400">Delivery controls</p>
+                <div className="mt-4 space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-slate-500">Recurring</span>
+                    <span className="text-right text-white">
+                      {form.recurringEnabled
+                        ? `${form.recurringFrequency} • ${formatDate(form.nextIssueDate, form.timezone)}`
+                        : "Off"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-slate-500">Reminder</span>
+                    <span className="text-right text-white">
+                      {form.reminderEnabled ? "Enabled" : "Off"}
+                    </span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="text-slate-500">Payment link</span>
+                    <span className="max-w-[14rem] text-right text-white">
+                      {form.paymentLink ? "Attached" : "Not added"}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {emailComposer ? (
@@ -1969,140 +2019,142 @@ export default function Home() {
               </div>
             ) : null}
 
-            <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Brand profile</p>
-                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                    PDF branding
-                  </h2>
-                </div>
-                <p className="text-sm text-slate-500">Auto-saved</p>
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="rounded-[32px] border border-slate-200/80 bg-white/90 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-8">
+            <div className="flex items-end justify-between gap-4">
+              <div>
+                <p className="text-sm uppercase tracking-[0.22em] text-slate-500">Brand profile</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                  PDF branding
+                </h2>
               </div>
-
-              <div className="mt-6 grid gap-4">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Company name</span>
-                  <input
-                    value={brandProfile.companyName}
-                    onChange={(event) => updateBrandField("companyName", event.target.value)}
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Company email</span>
-                  <input
-                    type="email"
-                    value={brandProfile.companyEmail}
-                    onChange={(event) => updateBrandField("companyEmail", event.target.value)}
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Sender address</span>
-                  <textarea
-                    rows={3}
-                    value={brandProfile.companyAddress}
-                    onChange={(event) => updateBrandField("companyAddress", event.target.value)}
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">GST number</span>
-                  <input
-                    value={brandProfile.gstNumber}
-                    onChange={(event) => updateBrandField("gstNumber", event.target.value)}
-                    placeholder="29ABCDE1234F1Z5"
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Payment instructions</span>
-                  <textarea
-                    rows={3}
-                    value={brandProfile.paymentInstructions}
-                    onChange={(event) => updateBrandField("paymentInstructions", event.target.value)}
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Bank details</span>
-                  <textarea
-                    rows={3}
-                    value={brandProfile.bankDetails}
-                    onChange={(event) => updateBrandField("bankDetails", event.target.value)}
-                    placeholder="Bank name, account number, IFSC / SWIFT, beneficiary"
-                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                  />
-                </label>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Signatory name</span>
-                    <input
-                      value={brandProfile.signatoryName}
-                      onChange={(event) => updateBrandField("signatoryName", event.target.value)}
-                      placeholder="Chintan Tejani"
-                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                    />
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Footer note</span>
-                    <input
-                      value={brandProfile.footerNote}
-                      onChange={(event) => updateBrandField("footerNote", event.target.value)}
-                      placeholder="Thank you for your business."
-                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
-                    />
-                  </label>
-                </div>
-
-                <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-700">Logo</p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        Upload a square PNG or JPG for your PDF header.
-                      </p>
-                    </div>
-                    <label className="inline-flex min-h-12 cursor-pointer items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100">
-                      Upload logo
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        onChange={handleLogoUpload}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-
-                  {brandProfile.logoDataUrl ? (
-                    <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-white p-3">
-                      <Image
-                        src={brandProfile.logoDataUrl}
-                        alt="Brand logo preview"
-                        width={56}
-                        height={56}
-                        className="h-14 w-14 rounded-2xl object-cover"
-                      />
-                      <button
-                        onClick={() => updateBrandField("logoDataUrl", "")}
-                        className="min-h-12 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-                      >
-                        Remove logo
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+              <p className="text-sm text-slate-500">Auto-saved</p>
             </div>
 
+            <div className="mt-6 grid gap-4 lg:grid-cols-2">
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-slate-700">Company name</span>
+                <input
+                  value={brandProfile.companyName}
+                  onChange={(event) => updateBrandField("companyName", event.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-slate-700">Company email</span>
+                <input
+                  type="email"
+                  value={brandProfile.companyEmail}
+                  onChange={(event) => updateBrandField("companyEmail", event.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <label className="space-y-2 lg:col-span-2">
+                <span className="text-sm font-medium text-slate-700">Sender address</span>
+                <textarea
+                  rows={3}
+                  value={brandProfile.companyAddress}
+                  onChange={(event) => updateBrandField("companyAddress", event.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-slate-700">GST number</span>
+                <input
+                  value={brandProfile.gstNumber}
+                  onChange={(event) => updateBrandField("gstNumber", event.target.value)}
+                  placeholder="29ABCDE1234F1Z5"
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">Logo</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Upload a square PNG or JPG for your PDF header.
+                    </p>
+                  </div>
+                  <label className="inline-flex min-h-12 cursor-pointer items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-100">
+                    Upload logo
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={handleLogoUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                {brandProfile.logoDataUrl ? (
+                  <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-white p-3">
+                    <Image
+                      src={brandProfile.logoDataUrl}
+                      alt="Brand logo preview"
+                      width={56}
+                      height={56}
+                      className="h-14 w-14 rounded-2xl object-cover"
+                    />
+                    <button
+                      onClick={() => updateBrandField("logoDataUrl", "")}
+                      className="min-h-12 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                    >
+                      Remove logo
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-slate-700">Payment instructions</span>
+                <textarea
+                  rows={3}
+                  value={brandProfile.paymentInstructions}
+                  onChange={(event) => updateBrandField("paymentInstructions", event.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-slate-700">Bank details</span>
+                <textarea
+                  rows={3}
+                  value={brandProfile.bankDetails}
+                  onChange={(event) => updateBrandField("bankDetails", event.target.value)}
+                  placeholder="Bank name, account number, IFSC / SWIFT, beneficiary"
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                />
+              </label>
+
+              <div className="grid gap-4 lg:col-span-2 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Signatory name</span>
+                  <input
+                    value={brandProfile.signatoryName}
+                    onChange={(event) => updateBrandField("signatoryName", event.target.value)}
+                    placeholder="Chintan Tejani"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700">Footer note</span>
+                  <input
+                    value={brandProfile.footerNote}
+                    onChange={(event) => updateBrandField("footerNote", event.target.value)}
+                    placeholder="Thank you for your business."
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
