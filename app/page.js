@@ -632,11 +632,20 @@ export default function Home() {
   const [emailComposer, setEmailComposer] = useState(null);
   const [upgradeModal, setUpgradeModal] = useState(null);
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState("");
+  const [authMode, setAuthMode] = useState("signin");
+  const [authForm, setAuthForm] = useState({
+    email: "",
+    password: "",
+    confirmPassword: "",
+  });
   const [loginError, setLoginError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
   const [dataError, setDataError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
   const [reminderMessage, setReminderMessage] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
+  const [isSendingReset, setIsSendingReset] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isStartingUpgrade, setIsStartingUpgrade] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(null);
@@ -856,6 +865,7 @@ export default function Home() {
     if (!supabase) return;
 
     setLoginError("");
+    setAuthMessage("");
     setIsLoggingIn(true);
 
     const { data, error } = await supabase.auth.signInWithOAuth({
@@ -879,6 +889,107 @@ export default function Home() {
     }
 
     setLoginError("Unable to start login. Please verify your Supabase auth settings.");
+  };
+
+  const updateAuthField = (field, value) => {
+    setAuthForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const submitEmailAuth = async (event) => {
+    event.preventDefault();
+    if (!supabase) return;
+
+    const email = safeString(authForm.email).trim();
+    const password = safeString(authForm.password);
+    const confirmPassword = safeString(authForm.confirmPassword);
+
+    setLoginError("");
+    setAuthMessage("");
+
+    if (!email || !password) {
+      setLoginError("Enter both your email address and password.");
+      return;
+    }
+
+    if (authMode === "signup") {
+      if (password.length < 6) {
+        setLoginError("Use at least 6 characters for your password.");
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setLoginError("Password and confirm password must match.");
+        return;
+      }
+    }
+
+    setIsSubmittingAuth(true);
+
+    if (authMode === "signup") {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+
+      setIsSubmittingAuth(false);
+
+      if (error) {
+        setLoginError(error.message || "Unable to create your account.");
+        return;
+      }
+
+      setAuthForm({ email, password: "", confirmPassword: "" });
+      setAuthMessage(
+        "Account created. If email confirmation is enabled in Supabase, check your inbox before signing in."
+      );
+      setAuthMode("signin");
+      return;
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    setIsSubmittingAuth(false);
+
+    if (error) {
+      setLoginError(error.message || "Unable to sign in with email and password.");
+      return;
+    }
+
+    setAuthForm({ email: "", password: "", confirmPassword: "" });
+  };
+
+  const sendPasswordReset = async () => {
+    if (!supabase) return;
+
+    const email = safeString(authForm.email).trim();
+    setLoginError("");
+    setAuthMessage("");
+
+    if (!email) {
+      setLoginError("Enter your email address first, then use reset password.");
+      return;
+    }
+
+    setIsSendingReset(true);
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+
+    setIsSendingReset(false);
+
+    if (error) {
+      setLoginError(error.message || "Unable to send the reset email.");
+      return;
+    }
+
+    setAuthMessage("Password reset email sent. Open the link in your inbox to choose a new password.");
   };
 
   const logout = async () => {
@@ -1412,21 +1523,126 @@ export default function Home() {
           <aside className="flex items-center">
             <div className="w-full rounded-[32px] border border-slate-200/80 bg-white/85 p-8 shadow-[0_25px_80px_rgba(15,23,42,0.12)] backdrop-blur sm:p-10">
               <p className="text-sm uppercase tracking-[0.28em] text-slate-500">
-                Welcome back
+                Welcome
               </p>
               <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">
-                Sign in with Google
+                Sign in or create your account
               </h2>
               <p className="mt-3 text-base leading-7 text-slate-600">
-                Your session stays persistent, and logout clears the workspace cleanly.
+                Use Google for one-tap access, or register with email and password for a
+                direct login flow.
               </p>
+
+              <div className="mt-8 grid grid-cols-2 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("signin");
+                    setLoginError("");
+                    setAuthMessage("");
+                  }}
+                  className={`min-h-11 rounded-[14px] px-4 text-sm font-medium transition ${
+                    authMode === "signin"
+                      ? "bg-white text-slate-950 shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("signup");
+                    setLoginError("");
+                    setAuthMessage("");
+                  }}
+                  className={`min-h-11 rounded-[14px] px-4 text-sm font-medium transition ${
+                    authMode === "signup"
+                      ? "bg-white text-slate-950 shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  Register
+                </button>
+              </div>
+
+              <form onSubmit={submitEmailAuth} className="mt-6 space-y-4">
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-slate-700">
+                    Email ID
+                  </span>
+                  <input
+                    type="email"
+                    value={authForm.email}
+                    onChange={(event) => updateAuthField("email", event.target.value)}
+                    className="min-h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-slate-700">
+                    Password
+                  </span>
+                  <input
+                    type="password"
+                    value={authForm.password}
+                    onChange={(event) => updateAuthField("password", event.target.value)}
+                    className="min-h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                    placeholder="Enter your password"
+                    autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+                  />
+                </label>
+
+                {authMode === "signup" ? (
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-medium text-slate-700">
+                      Reconfirm password
+                    </span>
+                    <input
+                      type="password"
+                      value={authForm.confirmPassword}
+                      onChange={(event) =>
+                        updateAuthField("confirmPassword", event.target.value)
+                      }
+                      className="min-h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      placeholder="Enter your password again"
+                      autoComplete="new-password"
+                    />
+                  </label>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={isSubmittingAuth}
+                  className="inline-flex min-h-14 w-full items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSubmittingAuth
+                    ? authMode === "signup"
+                      ? "Creating account..."
+                      : "Signing in..."
+                    : authMode === "signup"
+                      ? "Submit"
+                      : "Login"}
+                </button>
+              </form>
+
+              <button
+                type="button"
+                onClick={sendPasswordReset}
+                disabled={isSendingReset}
+                className="mt-4 text-sm font-medium text-slate-600 underline decoration-slate-300 underline-offset-4 transition hover:text-slate-900"
+              >
+                {isSendingReset ? "Sending reset link..." : "Forgot password? Reset it"}
+              </button>
 
               <button
                 onClick={login}
                 disabled={isLoggingIn}
-                className="mt-8 inline-flex min-h-14 w-full items-center justify-center rounded-2xl bg-slate-950 px-6 py-4 text-base font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-8 inline-flex min-h-14 w-full items-center justify-center rounded-2xl border border-slate-300 bg-white px-6 py-4 text-base font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isLoggingIn ? "Starting login..." : "Start Free"}
+                {isLoggingIn ? "Starting Google sign-in..." : "Continue with Google"}
               </button>
 
               <a
@@ -1435,6 +1651,12 @@ export default function Home() {
               >
                 View pricing
               </a>
+
+              {authMessage ? (
+                <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  {authMessage}
+                </p>
+              ) : null}
 
               {loginError ? (
                 <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
