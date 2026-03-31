@@ -796,13 +796,22 @@ export default function Home() {
 
     if (error) return;
 
-    setSubscription(
+    const nextSubscription =
       data || {
         plan: "free",
         status: "inactive",
-      }
-    );
-  }, []);
+      };
+
+    setSubscription(nextSubscription);
+
+    if (
+      nextSubscription.plan === "pro" &&
+      nextSubscription.status === "active" &&
+      saveSuccess === "Payment confirmed. Activating your Pro plan..."
+    ) {
+      setSaveSuccess("Pro plan activated. Unlimited invoices and payment links are now unlocked.");
+    }
+  }, [saveSuccess]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -864,6 +873,22 @@ export default function Home() {
       screen: "home",
     });
   }, [authReady, user]);
+
+  useEffect(() => {
+    if (saveSuccess !== "Pro plan activated. Unlimited invoices and payment links are now unlocked.") {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setSaveSuccess((current) =>
+        current === "Pro plan activated. Unlimited invoices and payment links are now unlocked."
+          ? ""
+          : current
+      );
+    }, 2600);
+
+    return () => window.clearTimeout(timeout);
+  }, [saveSuccess]);
 
   useEffect(() => {
     if (!user) return;
@@ -1839,18 +1864,22 @@ export default function Home() {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <a
-                href="/pricing"
-                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-              >
-                Pricing
-              </a>
-              <button
-                onClick={() => openUpgradeModal("manual")}
-                className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-              >
-                {activePro ? "Pro Active" : "Upgrade"}
-              </button>
+              {!activePro ? (
+                <>
+                  <a
+                    href="/pricing"
+                    className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    Pricing
+                  </a>
+                  <button
+                    onClick={() => openUpgradeModal("manual")}
+                    className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    Upgrade
+                  </button>
+                </>
+              ) : null}
               <button
                 onClick={resetDraft}
                 className="min-h-12 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
