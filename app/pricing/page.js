@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { getAbsoluteAppUrl, withBasePath } from "../../lib/routes";
 import { supabase } from "../../lib/supabase";
 import { trackEvent } from "../../lib/analytics";
 
@@ -35,7 +36,7 @@ export default function PricingPage() {
     const { data, error: loginError } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/pricing`,
+        redirectTo: getAbsoluteAppUrl("/pricing"),
         skipBrowserRedirect: true,
       },
     });
@@ -95,7 +96,7 @@ export default function PricingPage() {
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/pricing`,
+          emailRedirectTo: getAbsoluteAppUrl("/pricing"),
         },
       });
 
@@ -143,7 +144,7 @@ export default function PricingPage() {
       screen: "pricing",
       method: "email_password",
     });
-    window.location.assign("/");
+    window.location.assign(withBasePath("/"));
   };
 
   const sendPasswordReset = async () => {
@@ -161,7 +162,7 @@ export default function PricingPage() {
     setIsLoading(true);
 
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: getAbsoluteAppUrl("/reset-password"),
     });
 
     setIsLoading(false);

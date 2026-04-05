@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
+import { getAbsoluteAppUrl, withBasePath } from "../lib/routes";
 import { supabase } from "../lib/supabase";
 import { identifyUser, resetAnalyticsIdentity, trackEvent } from "../lib/analytics";
 
@@ -183,7 +184,7 @@ function getBrandStorageKey(userId) {
 
 function buildPublicInvoiceUrl(invoice) {
   if (typeof window === "undefined" || !invoice?.public_slug) return "";
-  return `${window.location.origin}/invoice/${invoice.public_slug}`;
+  return getAbsoluteAppUrl(`/invoice/${invoice.public_slug}`);
 }
 
 function formatCurrency(value, currency = "INR") {
@@ -963,7 +964,7 @@ export default function Home() {
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: getAbsoluteAppUrl(),
         skipBrowserRedirect: true,
       },
     });
@@ -1028,7 +1029,7 @@ export default function Home() {
         email,
         password,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: getAbsoluteAppUrl(),
         },
       });
 
@@ -1090,7 +1091,7 @@ export default function Home() {
     setIsSendingReset(true);
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: getAbsoluteAppUrl("/reset-password"),
     });
 
     setIsSendingReset(false);
@@ -1246,7 +1247,7 @@ export default function Home() {
       provider: "razorpay",
     });
 
-    const response = await fetch("/api/billing/create-subscription", {
+    const response = await fetch(withBasePath("/api/billing/create-subscription"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1527,7 +1528,7 @@ export default function Home() {
     setReminderMessage("");
     setDataError("");
 
-    const response = await fetch("/api/reminders", {
+    const response = await fetch(withBasePath("/api/reminders"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1561,7 +1562,7 @@ export default function Home() {
     setIsSendingReminder(emailComposer.invoiceId);
     setDataError("");
 
-    const response = await fetch("/api/send-invoice", {
+    const response = await fetch(withBasePath("/api/send-invoice"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

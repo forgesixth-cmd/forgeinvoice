@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "../../../lib/supabase-admin";
+import { withBasePath } from "../../../lib/routes";
 
 function createSupabaseAuthClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -87,7 +88,7 @@ export async function POST(request) {
   }
 
   const publicInvoiceUrl = invoice.public_slug
-    ? `${request.nextUrl.origin}/invoice/${invoice.public_slug}`
+    ? `${request.nextUrl.origin}${withBasePath(`/invoice/${invoice.public_slug}`)}`
     : "";
 
   const html = `
