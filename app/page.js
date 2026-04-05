@@ -1669,7 +1669,7 @@ export default function Home() {
                 Create international invoices in 30 seconds and get paid faster.
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-8 text-slate-600">
-                Google sign-in, saved sessions, reminders, mobile-ready actions,
+                Google sign-in, reminders, mobile-ready actions,
                 and premium PDF invoices for freelancers working across borders.
               </p>
             </div>
